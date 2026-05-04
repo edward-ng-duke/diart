@@ -18,7 +18,7 @@ from fastapi import FastAPI
 
 from diart_server.config import settings
 from diart_server.models_registry import ModelsRegistry
-from diart_server.ws_routes import probes_router
+from diart_server.ws_routes import probes_router, ws_router
 
 logger = logging.getLogger(__name__)
 
@@ -69,3 +69,4 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="diart-server", version="0.1.0", lifespan=lifespan)
 app.include_router(probes_router)
+app.include_router(ws_router)
