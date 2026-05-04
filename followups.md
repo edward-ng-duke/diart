@@ -10,11 +10,13 @@ _None yet._
 
 ## Medium
 
-_None yet._
+- **T3** — Implementer added `[tool.pytest.ini_options]` block to `pyproject.toml` (out-of-scope per spec) to resolve a package name collision: spec required creating `tests/diart_server/__init__.py`, which under pytest's default `prepend` import mode shadows the real `src/diart_server/` package. Fix: `--import-mode=importlib` + `pythonpath = ["src", "tests"]`. Existing 14 diart tests still pass. Alternative would have been to skip `__init__.py` (pytest auto-discovers subdir tests). Decision: keep the pytest config change; it benefits all subsequent test tasks (T4-T33). Confirm with user that this is acceptable.
 
 ## Low
 
-_None yet._
+- **T3** — `pyproject.toml` `pythonpath = ["src", "tests"]` could be just `["tests"]` since editable install puts src on sys.path. Or refactor `tests/utils.py` to `tests/utils/__init__.py` and drop pythonpath entirely. Minor cleanup.
+- **T3** — 20 parametrized error tests (3 × 6 + 2) overlap; could be ~8 without losing coverage. Three parametrizations all iterate over the same 6 subclasses.
+- **T3** — `to_message(self) -> dict` could be tightened to `dict[str, str]` for stricter typing. mypy --strict warns. T4 will introduce `ErrorMessage` Pydantic schema that may supersede this.
 
 ## Assumptions Made (need confirmation)
 
