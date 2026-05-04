@@ -4,3 +4,12 @@ requires = [
   "wheel",
 ]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# Use importlib import mode so test packages under tests/ (e.g.
+# tests/diart_server/) do not collide with installed top-level packages
+# of the same name on sys.path.
+addopts = "--import-mode=importlib"
+# importlib mode does not auto-prepend the rootdir of each test module
+# to sys.path. Add the directories that existing tests import from.
+pythonpath = ["src", "tests"]
