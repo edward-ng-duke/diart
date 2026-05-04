@@ -1,0 +1,140 @@
+"""Pydantic v2 message schemas for the diart_server WebSocket protocol.
+
+These models define the wire format for all server -> client JSON messages
+(``ReadyMessage``, ``PredictionMessage``, ``FinalMessage``, ``ErrorMessage``)
+and the one client -> server JSON control message (``EndControl``).
+
+The :class:`QueryParams` model validates the per-session query string
+parameters that are passed when opening the WebSocket. ``parse_query``
+wraps :class:`pydantic.ValidationError` as
+:class:`diart_server.errors.BadAudioError` so the error boundary can map
+it directly to a wire-format error message.
+
+This module is pure: it does not import FastAPI/Starlette and performs no
+I/O. Routes/sessions consume these schemas in later tasks.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from diart_server.errors import BadAudioError, ErrorCode
+
+
+# ---------------------------------------------------------------------------
+# Server -> client messages
+# ---------------------------------------------------------------------------
+
+
+class ReadyMessage(BaseModel):
+    """Sent once after the session is fully initialized."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["ready"] = "ready"
+    session_id: str
+    sample_rate: int
+    pipeline: Literal["diarization", "vad"]
+    models: dict[str, str]
+    config: dict[str, Any]
+
+
+class PredictionMessage(BaseModel):
+    """Streamed once per inference window with detected speaker info."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["prediction"] = "prediction"
+    start: float
+    duration: float
+    speaker: str
+    embedding: list[float]
+    samples_count: int
+
+
+class FinalMessage(BaseModel):
+    """Terminal summary message sent once when the stream ends."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["final"] = "final"
+    rttm: str
+    duration: float
+    num_speakers: int
+    stats: dict[str, Any]
+
+
+class ErrorMessage(BaseModel):
+    """Wire-format error message; ``code`` serializes as the enum value."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    type: Literal["error"] = "error"
+    code: ErrorCode
+    message: str
+
+
+# ---------------------------------------------------------------------------
+# Client -> server control messages
+# ---------------------------------------------------------------------------
+
+
+class EndControl(BaseModel):
+    """Client signals end-of-stream. Distinguished from binary audio frames
+    by being JSON with ``type == "end"``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["end"] = "end"
+
+
+# ---------------------------------------------------------------------------
+# Query parameters
+# ---------------------------------------------------------------------------
+
+
+class QueryParams(BaseModel):
+    """Per-session configuration parsed from the WebSocket query string.
+
+    Defaults and ranges come from STANDALONE_SERVER.md §4.2. All fields
+    are optional in the request; missing fields fall back to defaults.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    pipeline: Literal["diarization", "vad"] = "diarization"
+    segmentation_model: str = Field(default="pyannote/segmentation-3.0")
+    embedding_model: str = Field(default="pyannote/embedding")
+    tau_active: float = Field(default=0.507, ge=0.0, le=1.0)
+    rho_update: float = Field(default=0.006, ge=0.0, le=1.0)
+    delta_new: float = Field(default=1.057, ge=0.0, le=2.0)
+    latency: float = Field(default=0.5, ge=0.5, le=5.0)
+    max_speakers: int = Field(default=10, ge=2, le=20)
+    duration: float = Field(default=5.0, gt=0.0)
+    step: float = Field(default=0.5, ge=0.1, le=1.0)
+
+
+def parse_query(qp: dict) -> QueryParams:
+    """Validate raw query-string params and wrap errors as ``BadAudioError``.
+
+    Starlette's ``request.query_params`` is a ``MultiDict``; callers should
+    pass ``dict(query_params)`` since all our fields are single-valued.
+    """
+    try:
+        return QueryParams.model_validate(qp)
+    except ValidationError as exc:
+        raise BadAudioError(str(exc)) from exc
+
+
+__all__ = [
+    "ReadyMessage",
+    "PredictionMessage",
+    "FinalMessage",
+    "ErrorMessage",
+    "EndControl",
+    "QueryParams",
+    "parse_query",
+]
