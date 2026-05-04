@@ -144,6 +144,14 @@ class DiarizationSession:
         # compute the total session duration in the close summary.
         self._started_at: Optional[float] = None
 
+        # Monotonic timestamp of the most recent push_pcm call. Sampled
+        # in :meth:`_on_prediction` to populate the prediction_latency
+        # histogram (T28). This is an approximation: when multiple
+        # frames are pushed between predictions only the last is timed.
+        # Good enough for observability; precise frame-level latency
+        # tracking would require a per-frame timestamp queue.
+        self._last_push_at: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Outbound payloads
     # ------------------------------------------------------------------
@@ -196,10 +204,13 @@ class DiarizationSession:
         """Forward a decoded PCM frame to the audio source.
 
         Also increments the bytes-received counter so backpressure and
-        throughput are observable from Prometheus.
+        throughput are observable from Prometheus, and stamps
+        ``_last_push_at`` so :meth:`_on_prediction` can compute the
+        end-to-end latency histogram (T28).
         """
         self.source.push_pcm(pcm)
         metrics.audio_bytes_received.inc(pcm.nbytes)
+        self._last_push_at = time.monotonic()
 
     async def close(self) -> dict:
         """Stop the inference thread and emit a final summary message.
@@ -275,7 +286,17 @@ class DiarizationSession:
         :class:`PredictionMessage` (including the running clustering
         centroid as the embedding) and forwards it to the asyncio loop
         via :func:`asyncio.run_coroutine_threadsafe`.
+
+        Also observes the ``prediction_latency`` histogram once per
+        callback as ``now - _last_push_at`` (T28). The measurement is
+        approximate because multiple frames may be pushed between
+        predictions; it is intended for end-to-end observability rather
+        than frame-level accounting.
         """
+        if self._last_push_at is not None:
+            metrics.prediction_latency.observe(
+                time.monotonic() - self._last_push_at
+            )
         annotation, _waveform = ann_wav
         for turn, _, speaker in annotation.itertracks(yield_label=True):
             self._speaker_counts[speaker] += 1

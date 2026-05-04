@@ -116,6 +116,7 @@ async def stream(websocket: WebSocket) -> None:
     try:
         params = QueryParams.model_validate(dict(websocket.query_params))
     except ValidationError as exc:
+        metrics.session_errors_total.labels(code="BAD_AUDIO").inc()
         await websocket.send_json(
             {"type": "error", "code": "BAD_AUDIO", "message": str(exc)}
         )
@@ -130,12 +131,14 @@ async def stream(websocket: WebSocket) -> None:
             loop=asyncio.get_running_loop(),
         )
     except NotImplementedError as exc:
+        metrics.session_errors_total.labels(code="BAD_AUDIO").inc()
         await websocket.send_json(
             {"type": "error", "code": "BAD_AUDIO", "message": str(exc)}
         )
         await websocket.close(code=1008)
         return
     except ModelNotFoundError as exc:
+        metrics.session_errors_total.labels(code="MODEL_NOT_FOUND").inc()
         await websocket.send_json(
             {"type": "error", "code": "MODEL_NOT_FOUND", "message": str(exc)}
         )
@@ -146,6 +149,7 @@ async def stream(websocket: WebSocket) -> None:
     # ``metrics.active_sessions._value.get()`` and then bumped the gauge
     # in ``session.start()``, which races under concurrent connections.
     if not await manager.register(session):
+        metrics.session_errors_total.labels(code="SESSION_CAPACITY_FULL").inc()
         await websocket.send_json(
             {
                 "type": "error",
@@ -171,6 +175,9 @@ async def stream(websocket: WebSocket) -> None:
             raw = msg.get("bytes")
             if raw is not None:
                 if len(raw) > settings.max_frame_bytes:
+                    metrics.session_errors_total.labels(
+                        code="RATE_LIMIT_EXCEEDED"
+                    ).inc()
                     await websocket.send_json(
                         {
                             "type": "error",
@@ -183,6 +190,9 @@ async def stream(websocket: WebSocket) -> None:
                 try:
                     pcm = audio_decoder.to_pcm_16k_mono(raw, params.sample_rate)
                 except (BadAudioError, ResampleFailedError) as exc:
+                    metrics.session_errors_total.labels(
+                        code=exc.code.value
+                    ).inc()
                     await websocket.send_json(exc.to_message())
                     continue
                 session.push_pcm(pcm)

@@ -10,6 +10,7 @@ See STANDALONE_SERVER.md section 5.5 for the full design rationale.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,7 @@ from typing import Literal
 import torch
 
 from diart.models import EmbeddingModel, SegmentationModel
+from diart_server import metrics
 from diart_server.errors import ModelNotFoundError
 
 
@@ -94,10 +96,15 @@ class ModelsRegistry:
         if spec is None or spec.kind != "segmentation":
             raise ModelNotFoundError(f"segmentation model not found: {name}")
         local_path = str(self.models_dir / spec.local_path)
+        # Time the actual load so dashboards can spot slow disks/network.
+        start = time.monotonic()
         if spec.backend == "onnx":
             model = SegmentationModel.from_onnx(local_path)
         else:
             model = SegmentationModel.from_pyannote(local_path, use_hf_token=False)
+        metrics.model_load_seconds.labels(model=name).set(
+            time.monotonic() - start
+        )
         self._segmentations[name] = model
         return model
 
@@ -117,10 +124,15 @@ class ModelsRegistry:
         if spec is None or spec.kind != "embedding":
             raise ModelNotFoundError(f"embedding model not found: {name}")
         local_path = str(self.models_dir / spec.local_path)
+        # Time the actual load so dashboards can spot slow disks/network.
+        start = time.monotonic()
         if spec.backend == "onnx":
             model = EmbeddingModel.from_onnx(local_path)
         else:
             model = EmbeddingModel.from_pyannote(local_path, use_hf_token=False)
+        metrics.model_load_seconds.labels(model=name).set(
+            time.monotonic() - start
+        )
         self._embeddings[name] = model
         return model
 
