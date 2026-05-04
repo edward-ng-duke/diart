@@ -41,6 +41,8 @@ _None yet._
 - **T14** — Embedding-length assertion is necessarily relaxed (128–512 range) due to DummyEmbeddingModel emitting random dim per call. Add per-speaker dim-consistency check to retoothen.
 - **T14** — Replace fixed `time.sleep(2.0)` with `asyncio.Event` triggered when prediction count threshold reached. Reduces 6.75s runtime.
 - **T14** — `sys.path` munging at module top; replace with `tests/diart_server/conftest.py` re-export of dummies, or move dummies to shared `tests/dummy_models.py`.
+- **T19** — Assertion `total_inference_frames >= 1 or final_msg["num_speakers"] >= 0` is effectively unconditional (num_speakers is always ≥ 0). Tighten to drop the `or` clause to actually enforce "got something between ready and final".
+- **T19** — Relies on Starlette's private `_send_queue` for non-blocking message drain. Brittle across Starlette versions. Replace if Starlette ships a public timeout API.
 
 ## Assumptions Made (need confirmation)
 
