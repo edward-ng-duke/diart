@@ -1,0 +1,62 @@
+[
+  {
+    "hf_name": "pyannote/segmentation",
+    "local_path": "pyannote/segmentation",
+    "kind": "segmentation",
+    "backend": "pyannote"
+  },
+  {
+    "hf_name": "pyannote/segmentation-3.0",
+    "local_path": "pyannote/segmentation-3.0",
+    "kind": "segmentation",
+    "backend": "pyannote"
+  },
+  {
+    "hf_name": "pyannote/embedding",
+    "local_path": "pyannote/embedding",
+    "kind": "embedding",
+    "backend": "pyannote"
+  },
+  {
+    "hf_name": "pyannote/wespeaker-voxceleb-resnet34-LM",
+    "local_path": "pyannote/wespeaker",
+    "kind": "embedding",
+    "backend": "pyannote"
+  },
+  {
+    "hf_name": "hbredin/wespeaker-voxceleb-resnet34-LM",
+    "local_path": "onnx/wespeaker.onnx",
+    "kind": "embedding",
+    "backend": "onnx"
+  },
+  {
+    "hf_name": "speechbrain/spkrec-xvect-voxceleb",
+    "local_path": "speechbrain/xvect",
+    "kind": "embedding",
+    "backend": "speechbrain"
+  },
+  {
+    "hf_name": "speechbrain/spkrec-ecapa-voxceleb",
+    "local_path": "speechbrain/ecapa",
+    "kind": "embedding",
+    "backend": "speechbrain"
+  },
+  {
+    "hf_name": "speechbrain/spkrec-ecapa-voxceleb-mel-spec",
+    "local_path": "speechbrain/ecapa-mel",
+    "kind": "embedding",
+    "backend": "speechbrain"
+  },
+  {
+    "hf_name": "speechbrain/spkrec-resnet-voxceleb",
+    "local_path": "speechbrain/resnet",
+    "kind": "embedding",
+    "backend": "speechbrain"
+  },
+  {
+    "hf_name": "nvidia/speakerverification_en_titanet_large",
+    "local_path": "nvidia/titanet",
+    "kind": "embedding",
+    "backend": "nemo"
+  }
+]
