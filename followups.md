@@ -27,6 +27,8 @@ _None yet._
 - **T9** — `ModelsRegistry` cache writes are not protected by a Lock. With the GIL `dict[k]=v` is atomic but check-then-set is a TOCTOU window. For ONNX models (which eagerly load the ORT session), two racing sessions could materialize duplicate sessions briefly. Add `threading.Lock` around `get_*` check-then-set in T20 if multi-connection load testing reveals issues.
 - **T9** — `from_pyannote` only catches HTTPError/ModuleNotFoundError; corrupted local cache for speechbrain/nemo will surface as raw exception at first `.to(device)` or `.eval()` call, not at `get_*` time. Document this in class docstring or wrap in `MODEL_LOAD_FAILED` error code. Defer to T15 lifespan/warm-up integration.
 - **T9** — `warm_up` only loads defaults; non-default models pay first-request latency. Add note to docstring so T15/T17 implementers know.
+- **T10** — `__init__` builds heavy GPU-allocating modules (segmentation+embedding) before constructing MeetingAudioSource; if any later step throws, GPU tensors are orphaned to GC. T13's close() should be designed defensively to handle partial-init via `_partial_init` sentinel.
+- **T10** — VAD rejection raises before `self.id` is assigned, so log line in T17 won't have session id. Either assign id first or include `params.pipeline` in error message.
 
 ## Assumptions Made (need confirmation)
 
