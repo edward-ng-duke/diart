@@ -32,6 +32,8 @@ _None yet._
 - **T11** — `_run` crash path increments `session_errors_total` but does NOT decrement `active_sessions`. Resulting in a leak on every inference crash. T13's close() must handle this — also need T13 to call `metrics.active_sessions.dec()` from crash path of `_run`, not just normal close.
 - **T11** — `run_coroutine_threadsafe` future is discarded; if the websocket loop is closing or `on_message` raises (e.g., `ConnectionClosed`), the exception is buried. Add `add_done_callback` logging in T13.
 - **T11** — `attach_observers` is called in `__init__` but `attach_hooks` is called in `start`. Asymmetric. Move both to one place (T13 cleanup is a good time).
+- **T12** — `embedding=[]` when extraction returns None is ambiguous to clients. Better: change `PredictionMessage.embedding` to `Optional[list[float]]` and emit `None`. Requires T4 schema bump.
+- **T12** — Pipeline `_clustering` fallback is dead code (current diart uses public `clustering`). Drop the fallback in cleanup pass. Plan said `_clustering`; spec was wrong about diart internals.
 
 ## Assumptions Made (need confirmation)
 
