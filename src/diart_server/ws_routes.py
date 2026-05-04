@@ -13,6 +13,7 @@ See STANDALONE_SERVER.md sections 5.7 (probes), 5.8 (streaming), and
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
@@ -96,16 +97,19 @@ async def stream(websocket: WebSocket) -> None:
          errors are surfaced as ``BAD_AUDIO``; missing models as
          ``MODEL_NOT_FOUND``.
       5. Start the session and emit the ``ready`` message.
-      6. Iterate inbound binary frames, decoding/resampling each to 16 kHz
-         mono PCM and forwarding to the session. Oversized frames close
-         the socket with ``RATE_LIMIT_EXCEEDED`` (1009). Decode errors are
-         reported but do not terminate the stream.
-      7. On loop exit (either client end-of-stream or disconnect), close
-         the session and best-effort send the final summary message.
-
-    Text frames (``{"type":"end"}``) are out of scope for T17/T18 and are
-    silently filtered by ``websocket.iter_bytes()``; T22 introduces the
-    explicit end-of-stream control message.
+      6. Iterate inbound frames via :meth:`WebSocket.receive` so that
+         both binary audio and text control messages are handled in the
+         same loop. Binary frames are decoded/resampled to 16 kHz mono
+         PCM and forwarded to the session; oversized frames close the
+         socket with ``RATE_LIMIT_EXCEEDED`` (1009); decode errors are
+         reported but do not terminate the stream. Text frames are
+         parsed as JSON; ``{"type":"end"}`` triggers a graceful drain
+         and exits the loop so the ``finally`` block can emit the final
+         summary. Malformed text or unknown control types are silently
+         ignored.
+      7. On loop exit (either client end-of-stream, ``{"type":"end"}``,
+         or disconnect), close the session and best-effort send the
+         final summary message.
     """
     await websocket.accept()
 
@@ -156,23 +160,53 @@ async def stream(websocket: WebSocket) -> None:
     await websocket.send_json(session.ready_message())
 
     try:
-        async for raw in websocket.iter_bytes():
-            if len(raw) > settings.max_frame_bytes:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "code": "RATE_LIMIT_EXCEEDED",
-                        "message": "frame too large",
-                    }
-                )
-                await websocket.close(code=1009)
+        while True:
+            msg = await websocket.receive()
+            msg_type = msg.get("type")
+            # Starlette emits ``websocket.disconnect`` when the peer
+            # closes; treat it like the WebSocketDisconnect path below.
+            if msg_type == "websocket.disconnect":
                 break
-            try:
-                pcm = audio_decoder.to_pcm_16k_mono(raw, params.sample_rate)
-            except (BadAudioError, ResampleFailedError) as exc:
-                await websocket.send_json(exc.to_message())
+
+            raw = msg.get("bytes")
+            if raw is not None:
+                if len(raw) > settings.max_frame_bytes:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "RATE_LIMIT_EXCEEDED",
+                            "message": "frame too large",
+                        }
+                    )
+                    await websocket.close(code=1009)
+                    break
+                try:
+                    pcm = audio_decoder.to_pcm_16k_mono(raw, params.sample_rate)
+                except (BadAudioError, ResampleFailedError) as exc:
+                    await websocket.send_json(exc.to_message())
+                    continue
+                session.push_pcm(pcm)
                 continue
-            session.push_pcm(pcm)
+
+            text = msg.get("text")
+            if text is not None:
+                # Text frames carry control messages (e.g. graceful
+                # end-of-stream). Malformed JSON or unknown control
+                # types are ignored so a buggy client cannot tear down
+                # an in-flight session by sending random text.
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("type") == "end"
+                ):
+                    # Break out of the loop; ``finally`` drains the
+                    # session and emits the ``final`` summary before
+                    # closing the socket cleanly.
+                    break
+                continue
     except WebSocketDisconnect:
         pass
     finally:
