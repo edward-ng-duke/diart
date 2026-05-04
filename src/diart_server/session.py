@@ -38,7 +38,7 @@ from diart_server import metrics
 from diart_server.config import settings
 from diart_server.meeting_audio_source import MeetingAudioSource
 from diart_server.models_registry import ModelsRegistry
-from diart_server.protocol import QueryParams, ReadyMessage
+from diart_server.protocol import PredictionMessage, QueryParams, ReadyMessage
 
 
 class DiarizationSession:
@@ -226,8 +226,78 @@ class DiarizationSession:
             metrics.session_errors_total.labels(code="INFERENCE_CRASH").inc()
 
     def _on_prediction(self, ann_wav: Any) -> None:
-        """Observer callback for each emitted prediction. Implemented in T12."""
-        raise NotImplementedError("T12")
+        """Observer callback for each emitted prediction.
+
+        Called by diart's ``attach_hooks`` mechanism on the inference
+        thread. For each speaker turn in the emitted annotation, builds a
+        :class:`PredictionMessage` (including the running clustering
+        centroid as the embedding) and forwards it to the asyncio loop
+        via :func:`asyncio.run_coroutine_threadsafe`.
+        """
+        annotation, _waveform = ann_wav
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
+            self._speaker_counts[speaker] += 1
+            embedding = self._extract_embedding(speaker)
+            msg = PredictionMessage(
+                type="prediction",
+                start=turn.start,
+                duration=turn.duration,
+                speaker=speaker,
+                embedding=embedding.tolist() if embedding is not None else [],
+                samples_count=self._speaker_counts[speaker],
+            ).model_dump()
+            asyncio.run_coroutine_threadsafe(self.on_message(msg), self.loop)
+            metrics.predictions_total.labels(
+                pipeline=self.params.pipeline,
+                model=self.params.embedding_model,
+            ).inc()
+
+    def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
+        """Return the L2-normalized running centroid for the given speaker.
+
+        Speaker labels emitted by diart are formatted as ``"speaker<idx>"``
+        (e.g. ``"speaker0"``) where ``<idx>`` is the global cluster index
+        in ``OnlineSpeakerClustering.centers``. The raw entry in
+        ``centers`` is an unnormalized accumulating sum of all embeddings
+        ever assigned to the cluster (see ``diart.blocks.clustering``);
+        we L2-normalize before exposing so downstream voiceprint matchers
+        receive a stable unit vector regardless of session length.
+
+        Returns ``None`` when the clustering has not initialized yet
+        (no speech seen), the label cannot be parsed, the index is out
+        of range, the centroid index has not been added as an active
+        center, or the accumulated centroid has zero magnitude.
+        """
+        # ``SpeakerDiarization`` exposes the running clusterer as
+        # ``pipeline.clustering`` (see diart.blocks.diarization). We also
+        # accept the underscored name as a fallback in case future diart
+        # versions make it private.
+        clustering = getattr(self.pipeline, "clustering", None) or getattr(
+            self.pipeline, "_clustering", None
+        )
+        if clustering is None:
+            return None
+        centers = getattr(clustering, "centers", None)
+        if centers is None:
+            return None
+        # Labels are "speaker<idx>" (see diart.blocks.utils); strip prefix.
+        label = speaker_label
+        if label.startswith("speaker"):
+            label = label[len("speaker"):]
+        try:
+            idx = int(label)
+        except (ValueError, TypeError):
+            return None
+        if idx < 0 or idx >= len(centers):
+            return None
+        active = getattr(clustering, "active_centers", None)
+        if active is not None and idx not in active:
+            return None
+        vec = np.asarray(centers[idx], dtype=np.float32)
+        norm = float(np.linalg.norm(vec))
+        if norm <= 0.0:
+            return None
+        return vec / norm
 
 
 __all__ = ["DiarizationSession"]
