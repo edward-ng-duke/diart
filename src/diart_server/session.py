@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from collections import defaultdict
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
 import torch
@@ -134,6 +135,10 @@ class DiarizationSession:
         # observer callback. Used in the final summary stats (T13).
         self._speaker_counts: dict[str, int] = defaultdict(int)
 
+        # Wall-clock start time, set by :meth:`start`. Used by T13 to
+        # compute the total session duration in the close summary.
+        self._started_at: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Outbound payloads
     # ------------------------------------------------------------------
@@ -171,12 +176,25 @@ class DiarizationSession:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start the background inference thread. Implemented in T11."""
-        raise NotImplementedError("T11")
+        """Start the background inference thread.
+
+        Attaches the per-prediction observer hook, kicks off the
+        inference thread, bumps the active-session gauge, and records
+        the wall-clock start time used by T13 for the close summary.
+        """
+        self.inference.attach_hooks(self._on_prediction)
+        self._thread.start()
+        metrics.active_sessions.inc()
+        self._started_at = time.monotonic()
 
     def push_pcm(self, pcm: np.ndarray) -> None:
-        """Forward a decoded PCM frame to the audio source. Implemented in T11."""
-        raise NotImplementedError("T11")
+        """Forward a decoded PCM frame to the audio source.
+
+        Also increments the bytes-received counter so backpressure and
+        throughput are observable from Prometheus.
+        """
+        self.source.push_pcm(pcm)
+        metrics.audio_bytes_received.inc(pcm.nbytes)
 
     async def close(self) -> dict:
         """Stop inference and return the final summary. Implemented in T13."""
@@ -187,8 +205,25 @@ class DiarizationSession:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        """Inference thread target. Implemented in T11."""
-        raise NotImplementedError("T11")
+        """Inference thread target.
+
+        Runs the blocking :class:`StreamingInference` loop. Any
+        exception is converted into an ``error`` wire message and
+        forwarded to the asyncio loop via
+        :func:`asyncio.run_coroutine_threadsafe`, and bumps the
+        ``session_errors_total`` counter under the ``INFERENCE_CRASH``
+        label.
+        """
+        try:
+            self.inference()
+        except Exception as exc:
+            msg = {
+                "type": "error",
+                "code": "INFERENCE_CRASH",
+                "message": str(exc),
+            }
+            asyncio.run_coroutine_threadsafe(self.on_message(msg), self.loop)
+            metrics.session_errors_total.labels(code="INFERENCE_CRASH").inc()
 
     def _on_prediction(self, ann_wav: Any) -> None:
         """Observer callback for each emitted prediction. Implemented in T12."""
