@@ -43,6 +43,7 @@ _None yet._
 - **T14** — `sys.path` munging at module top; replace with `tests/diart_server/conftest.py` re-export of dummies, or move dummies to shared `tests/dummy_models.py`.
 - **T19** — Assertion `total_inference_frames >= 1 or final_msg["num_speakers"] >= 0` is effectively unconditional (num_speakers is always ≥ 0). Tighten to drop the `or` clause to actually enforce "got something between ready and final".
 - **T19** — Relies on Starlette's private `_send_queue` for non-blocking message drain. Brittle across Starlette versions. Replace if Starlette ships a public timeout API.
+- **T20** — `/readyz` still reads `metrics.active_sessions._value.get()` rather than `await manager.has_capacity()`. Consistency cleanup; manager is now source of truth.
 
 ## Assumptions Made (need confirmation)
 
