@@ -20,6 +20,10 @@ _None yet._
 - **T4** — `PredictionMessage` numeric fields lack `ge=0` constraints on `duration` / `samples_count`. Defense-in-depth nice-to-have. Also no `models`/`config`/`stats` schema specificity — defer to T9/T11/T13.
 - **T4** — Discriminated-union helper (`Annotated[Union[EndControl], Field(discriminator="type")]`) would simplify T17/T22 client-control dispatch when more control types are added. 2-line forward-compat hook.
 - **T4** — No coercion test for `parse_query({"sample_rate":"22050"})` (Starlette gives strings); add to T17 e2e or here as belt-and-suspenders.
+- **T6** — Add early-return guard `if self._closed.is_set(): return` at top of `push_pcm` to prevent post-close pushes from inflating the prometheus overflow counter (and from leaking memory if the source is recycled). 2-line fix.
+- **T6** — Wrap `on_overflow` callback invocation in try/except + log so a buggy callback doesn't kill the websocket handler. Defense-in-depth.
+- **T6** — Class docstring should explicitly state single-producer/single-consumer concurrency model. Multi-producer would require a lock around overflow branch.
+- **T6** — STANDALONE_SERVER.md §5.4 spec snippet has two latent bugs (bool _closed; blocking put(None) on close) that the implementation correctly fixed. Update spec to match.
 
 ## Assumptions Made (need confirmation)
 
