@@ -16,7 +16,10 @@ _None yet._
 
 - **T3** — `pyproject.toml` `pythonpath = ["src", "tests"]` could be just `["tests"]` since editable install puts src on sys.path. Or refactor `tests/utils.py` to `tests/utils/__init__.py` and drop pythonpath entirely. Minor cleanup.
 - **T3** — 20 parametrized error tests (3 × 6 + 2) overlap; could be ~8 without losing coverage. Three parametrizations all iterate over the same 6 subclasses.
-- **T3** — `to_message(self) -> dict` could be tightened to `dict[str, str]` for stricter typing. mypy --strict warns. T4 will introduce `ErrorMessage` Pydantic schema that may supersede this.
+- **T3** — `to_message(self) -> dict` could be tightened to `dict[str, str]` for stricter typing. mypy --strict warns. T4 introduced `ErrorMessage` Pydantic schema that may supersede this.
+- **T4** — `PredictionMessage` numeric fields lack `ge=0` constraints on `duration` / `samples_count`. Defense-in-depth nice-to-have. Also no `models`/`config`/`stats` schema specificity — defer to T9/T11/T13.
+- **T4** — Discriminated-union helper (`Annotated[Union[EndControl], Field(discriminator="type")]`) would simplify T17/T22 client-control dispatch when more control types are added. 2-line forward-compat hook.
+- **T4** — No coercion test for `parse_query({"sample_rate":"22050"})` (Starlette gives strings); add to T17 e2e or here as belt-and-suspenders.
 
 ## Assumptions Made (need confirmation)
 
