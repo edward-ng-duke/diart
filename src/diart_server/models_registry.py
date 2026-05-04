@@ -1,0 +1,128 @@
+"""Lazy model registry for diart_server.
+
+Loads a JSON manifest describing available segmentation/embedding models
+and constructs them on demand. Constructed models are cached so repeated
+lookups return the same instance.
+
+See STANDALONE_SERVER.md section 5.5 for the full design rationale.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import torch
+
+from diart.models import EmbeddingModel, SegmentationModel
+from diart_server.errors import ModelNotFoundError
+
+
+ModelKind = Literal["segmentation", "embedding"]
+ModelBackend = Literal["pyannote", "onnx", "speechbrain", "nemo"]
+
+
+@dataclass
+class ModelSpec:
+    """A single entry in the models manifest."""
+
+    hf_name: str
+    local_path: str
+    kind: ModelKind
+    backend: ModelBackend
+
+
+class ModelsRegistry:
+    """Lazy, cached registry of segmentation and embedding models.
+
+    The registry is constructed from a JSON manifest enumerating every
+    model the server is willing to serve. Models are not instantiated
+    until first requested via :meth:`get_segmentation` or
+    :meth:`get_embedding`; subsequent calls return the cached instance.
+
+    Backend dispatch:
+        * ``onnx`` backends are loaded via ``from_onnx``.
+        * Every other backend (``pyannote``, ``speechbrain``, ``nemo``)
+          goes through ``from_pyannote``, which internally falls back
+          to :class:`pyannote.audio.pipelines.speaker_verification.PretrainedSpeakerEmbedding`
+          for non-pyannote checkpoints (see ``diart.models.PyannoteLoader``).
+    """
+
+    def __init__(self, models_dir: Path, manifest_path: Path) -> None:
+        self.models_dir = Path(models_dir)
+        self.specs: dict[str, ModelSpec] = self._load_manifest(Path(manifest_path))
+        self._segmentations: dict[str, SegmentationModel] = {}
+        self._embeddings: dict[str, EmbeddingModel] = {}
+
+    @staticmethod
+    def _load_manifest(path: Path) -> dict[str, ModelSpec]:
+        data = json.loads(path.read_text())
+        return {entry["hf_name"]: ModelSpec(**entry) for entry in data}
+
+    def warm_up(
+        self,
+        device: torch.device,
+        default_seg: str,
+        default_emb: str,
+    ) -> None:
+        """Synchronously load the default segmentation+embedding models.
+
+        Intended to be invoked once during server startup so that the
+        first session does not pay model-load latency. Each model is
+        moved to ``device`` and put into eval mode.
+        """
+        seg = self.get_segmentation(default_seg)
+        seg.to(device).eval()
+        emb = self.get_embedding(default_emb)
+        emb.to(device).eval()
+
+    def get_segmentation(self, name: str) -> SegmentationModel:
+        """Return the segmentation model for ``name``, loading it on first access.
+
+        Raises
+        ------
+        ModelNotFoundError
+            If ``name`` is not in the manifest, or its kind is not
+            ``segmentation``.
+        """
+        cached = self._segmentations.get(name)
+        if cached is not None:
+            return cached
+        spec = self.specs.get(name)
+        if spec is None or spec.kind != "segmentation":
+            raise ModelNotFoundError(f"segmentation model not found: {name}")
+        local_path = str(self.models_dir / spec.local_path)
+        if spec.backend == "onnx":
+            model = SegmentationModel.from_onnx(local_path)
+        else:
+            model = SegmentationModel.from_pyannote(local_path, use_hf_token=False)
+        self._segmentations[name] = model
+        return model
+
+    def get_embedding(self, name: str) -> EmbeddingModel:
+        """Return the embedding model for ``name``, loading it on first access.
+
+        Raises
+        ------
+        ModelNotFoundError
+            If ``name`` is not in the manifest, or its kind is not
+            ``embedding``.
+        """
+        cached = self._embeddings.get(name)
+        if cached is not None:
+            return cached
+        spec = self.specs.get(name)
+        if spec is None or spec.kind != "embedding":
+            raise ModelNotFoundError(f"embedding model not found: {name}")
+        local_path = str(self.models_dir / spec.local_path)
+        if spec.backend == "onnx":
+            model = EmbeddingModel.from_onnx(local_path)
+        else:
+            model = EmbeddingModel.from_pyannote(local_path, use_hf_token=False)
+        self._embeddings[name] = model
+        return model
+
+
+__all__ = ["ModelSpec", "ModelsRegistry"]
