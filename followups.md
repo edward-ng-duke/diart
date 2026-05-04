@@ -29,6 +29,9 @@ _None yet._
 - **T9** — `warm_up` only loads defaults; non-default models pay first-request latency. Add note to docstring so T15/T17 implementers know.
 - **T10** — `__init__` builds heavy GPU-allocating modules (segmentation+embedding) before constructing MeetingAudioSource; if any later step throws, GPU tensors are orphaned to GC. T13's close() should be designed defensively to handle partial-init via `_partial_init` sentinel.
 - **T10** — VAD rejection raises before `self.id` is assigned, so log line in T17 won't have session id. Either assign id first or include `params.pipeline` in error message.
+- **T11** — `_run` crash path increments `session_errors_total` but does NOT decrement `active_sessions`. Resulting in a leak on every inference crash. T13's close() must handle this — also need T13 to call `metrics.active_sessions.dec()` from crash path of `_run`, not just normal close.
+- **T11** — `run_coroutine_threadsafe` future is discarded; if the websocket loop is closing or `on_message` raises (e.g., `ConnectionClosed`), the exception is buried. Add `add_done_callback` logging in T13.
+- **T11** — `attach_observers` is called in `__init__` but `attach_hooks` is called in `start`. Asymmetric. Move both to one place (T13 cleanup is a good time).
 
 ## Assumptions Made (need confirmation)
 
