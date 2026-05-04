@@ -3,8 +3,9 @@
 This module exposes a FastAPI app whose lifespan eagerly loads the
 default segmentation/embedding models at startup so the first
 WebSocket request is not penalised by a cold cache. Routers are
-attached by T16 (probes) and T17 (websocket); T20 will register a
-SessionManager and drain it on shutdown.
+attached by T16 (probes) and T17 (websocket); T20 wires the
+SessionManager drain into shutdown so in-flight sessions get a
+chance to flush their final summaries.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from fastapi import FastAPI
 
 from diart_server.config import settings
 from diart_server.models_registry import ModelsRegistry
+from diart_server.session_manager import manager
 from diart_server.ws_routes import probes_router, ws_router
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,7 @@ MANIFEST_PATH = Path(__file__).resolve().parent.parent.parent / "docker" / "mode
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm up models at startup; placeholder for T20 drain at shutdown."""
+    """Warm up models at startup; drain live sessions on shutdown."""
     logging.basicConfig(level=settings.log_level)
     logger.info(
         "diart_server starting on %s:%d device=%s models_dir=%s",
@@ -63,8 +65,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # T20 will drain active sessions here. For now, log shutdown.
-    logger.info("diart_server shutting down")
+    logger.info("diart_server shutting down; draining active sessions")
+    await manager.close_all(timeout=10.0)
 
 
 app = FastAPI(title="diart-server", version="0.1.0", lifespan=lifespan)

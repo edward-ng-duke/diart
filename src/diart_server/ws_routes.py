@@ -24,6 +24,7 @@ from diart_server.config import settings
 from diart_server.errors import BadAudioError, ModelNotFoundError, ResampleFailedError
 from diart_server.protocol import QueryParams
 from diart_server.session import DiarizationSession
+from diart_server.session_manager import manager
 
 probes_router = APIRouter()
 ws_router = APIRouter()
@@ -117,17 +118,6 @@ async def stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    if metrics.active_sessions._value.get() >= settings.max_concurrent_sessions:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "code": "SESSION_CAPACITY_FULL",
-                "message": "server at capacity",
-            }
-        )
-        await websocket.close(code=1013)
-        return
-
     try:
         session = DiarizationSession(
             params=params,
@@ -146,6 +136,20 @@ async def stream(websocket: WebSocket) -> None:
             {"type": "error", "code": "MODEL_NOT_FOUND", "message": str(exc)}
         )
         await websocket.close(code=1008)
+        return
+
+    # Atomic capacity-check + register. The previous implementation read
+    # ``metrics.active_sessions._value.get()`` and then bumped the gauge
+    # in ``session.start()``, which races under concurrent connections.
+    if not await manager.register(session):
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": "SESSION_CAPACITY_FULL",
+                "message": "server at capacity",
+            }
+        )
+        await websocket.close(code=1013)
         return
 
     session.start()
@@ -180,6 +184,10 @@ async def stream(websocket: WebSocket) -> None:
             # raise after a torn-down connection. Either way, don't
             # mask the original exit reason.
             pass
+        # Always release the manager slot, even if close() raised. The
+        # manager is the source of truth for capacity; metrics.active_sessions
+        # is observability-only.
+        await manager.unregister(session.id)
 
 
 __all__ = ["probes_router", "ws_router"]
