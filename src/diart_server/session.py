@@ -38,7 +38,12 @@ from diart_server import metrics
 from diart_server.config import settings
 from diart_server.meeting_audio_source import MeetingAudioSource
 from diart_server.models_registry import ModelsRegistry
-from diart_server.protocol import PredictionMessage, QueryParams, ReadyMessage
+from diart_server.protocol import (
+    FinalMessage,
+    PredictionMessage,
+    QueryParams,
+    ReadyMessage,
+)
 
 
 class DiarizationSession:
@@ -197,8 +202,45 @@ class DiarizationSession:
         metrics.audio_bytes_received.inc(pcm.nbytes)
 
     async def close(self) -> dict:
-        """Stop inference and return the final summary. Implemented in T13."""
-        raise NotImplementedError("T13")
+        """Stop the inference thread and emit a final summary message.
+
+        The source's queue is drained with a sentinel; the inference thread
+        is joined with a 5-second timeout. Metrics gauges are decremented.
+        The accumulated RTTM is included in the returned payload, along
+        with session duration and per-speaker prediction counts.
+        """
+        self.source.close()
+        # Inside an async def, get_running_loop() is the non-deprecated
+        # form (get_event_loop() will raise on 3.14+). The join is
+        # offloaded to the default executor so the asyncio loop stays
+        # free.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._thread.join, 5.0)
+        if self._started_at is not None:
+            metrics.active_sessions.dec()
+            metrics.session_duration.observe(time.monotonic() - self._started_at)
+            self._started_at = None  # idempotent close
+
+        prediction = self.accumulator.get_prediction()
+        if prediction is not None and len(prediction.labels()) > 0:
+            try:
+                duration = prediction.get_timeline().extent().end
+            except Exception:
+                duration = 0.0
+            rttm = prediction.to_rttm()
+            num_speakers = len(prediction.labels())
+        else:
+            duration = 0.0
+            rttm = ""
+            num_speakers = 0
+
+        return FinalMessage(
+            type="final",
+            rttm=rttm,
+            duration=float(duration),
+            num_speakers=num_speakers,
+            stats={"predictions_count": sum(self._speaker_counts.values())},
+        ).model_dump()
 
     # ------------------------------------------------------------------
     # Internals (filled in by T11 / T12)
