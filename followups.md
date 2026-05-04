@@ -36,6 +36,11 @@ _None yet._
 - **T12** — Pipeline `_clustering` fallback is dead code (current diart uses public `clustering`). Drop the fallback in cleanup pass. Plan said `_clustering`; spec was wrong about diart internals.
 - **T13** — `_thread.join(5.0)` returns silently on timeout; add `if self._thread.is_alive(): logger.warning(...)` and a `CLOSE_TIMEOUT` error code increment. Daemon thread leak is process-bounded but observability matters.
 - **T13** — `stats={"predictions_count": ...}` actually counts per-turn increments (one per (annotation, turn) pair), not per emitted prediction message. Field name is ambiguous — consider renaming to `turns_count` or documenting in protocol.FinalMessage.
+- **T14** — Test teardown should call `loop.run_until_complete(loop.shutdown_default_executor())` before `loop.close()` to avoid silent drops of straggler `run_coroutine_threadsafe` calls. Latent flakiness risk.
+- **T14** — Snapshot of `messages` is taken AFTER scheduling `close()` future result; race risk where late predictions arrive after snapshot. Currently masked by 2.0s sleep but not deterministic. Either snapshot before close, or have close() await pending on_message futures.
+- **T14** — Embedding-length assertion is necessarily relaxed (128–512 range) due to DummyEmbeddingModel emitting random dim per call. Add per-speaker dim-consistency check to retoothen.
+- **T14** — Replace fixed `time.sleep(2.0)` with `asyncio.Event` triggered when prediction count threshold reached. Reduces 6.75s runtime.
+- **T14** — `sys.path` munging at module top; replace with `tests/diart_server/conftest.py` re-export of dummies, or move dummies to shared `tests/dummy_models.py`.
 
 ## Assumptions Made (need confirmation)
 
