@@ -52,11 +52,11 @@ _None yet._
 ## Manual followups (deferred to user)
 
 - **T24 ✅ validated** — Ran `python docker/download_models.py /tmp/test_models` with real HF_TOKEN. 9 of 10 models downloaded + smoke-loaded. Issues found and fixed in commit `6704172` (path resolution for pyannote checkpoints, ONNX filename, partial-download cleanup).
-- **T24 manual (residual):** `pyannote/segmentation` (v1) is gated. The token holder is not yet on the access list; needs a license accept at https://huggingface.co/pyannote/segmentation. The default lifespan model is `segmentation-3.0` (not gated, downloaded fine), so the server runs without v1.
+- ~~**T24 manual (residual):** `pyannote/segmentation` (v1) is gated.~~ ✅ License accepted; v1 segmentation downloaded (17MB) + smoke-loaded + e2e-tested (7 predictions, 512-dim L2-normalized embeddings, 30ms/chunk).
 - **T25/T27 manual:** Docker build requires HF_TOKEN as a build secret. CI pipeline must inject it via `--secret id=hf_token` (BuildKit) or a build arg.
 
 ## Verified (manual)
 
-- ✅ `python docker/download_models.py /tmp/test_models` produces 9 of 10 models (~514MB total). Per-backend completeness check correctly handles partial downloads.
-- ✅ Runtime `ModelsRegistry` loads all 5 backends from local paths (pyannote / speechbrain / nemo / onnx) — verified by importing each and running a forward pass through `pyannote/segmentation-3.0`.
-- ✅ End-to-end TestClient WebSocket flow against REAL models (segmentation-3.0 + embedding): 7 predictions emitted, 512-dim L2-normalized embeddings (|emb|=1.0000), num_speakers=1 on single-speaker sample.wav, RTTM correctly rendered. Inference latency ~33ms/chunk (matches diart README benchmark for CPU).
+- ✅ `python docker/download_models.py /tmp/test_models` produces all **10/10** models (~550MB total). Per-backend completeness check correctly handles partial downloads.
+- ✅ Runtime `ModelsRegistry` loads all 5 backends from local paths (pyannote / speechbrain / nemo / onnx) — verified by importing each and running a forward pass through `pyannote/segmentation-3.0` and `pyannote/segmentation` (v1).
+- ✅ End-to-end TestClient WebSocket flow against REAL models with both **segmentation-3.0** (default) and **segmentation v1** (explicit query): 7 predictions emitted in each run, 512-dim L2-normalized embeddings (|emb|=1.0000), num_speakers=1 on single-speaker sample.wav, RTTM correctly rendered. Inference latency: 33ms/chunk (3.0) and 30ms/chunk (v1) — matches diart README CPU benchmark.
