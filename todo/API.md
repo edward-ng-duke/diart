@@ -16,10 +16,14 @@
 | [`/healthz`](#三http-healthz--readyz) | GET | 存活探针 |
 | [`/readyz`](#三http-healthz--readyz) | GET | 就绪探针 |
 | [`/metrics`](#五http-metrics) | GET | Prometheus 指标 |
+| `/` | GET | 307 重定向到 `/demo/` |
+| `/demo/` | GET | 浏览器 demo（上传 wav → 时间轴可视化） |
 
 **Base URL**：`http://<host>:7007`（HTTP）/ `ws://<host>:7007`（WebSocket）
 
 **鉴权**：本期无鉴权（假定内网部署或外层 ingress 处理）。
+
+**浏览器 demo**：访问 `http://<host>:7007/demo/`（或裸根路径自动跳转）即可上传音频并可视化分段。Demo 内部全部走下面的 WebSocket 端点，不需要后端额外接口。
 
 ---
 

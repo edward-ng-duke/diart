@@ -16,6 +16,8 @@ from pathlib import Path
 
 import torch
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from diart_server.config import settings
 from diart_server.models_registry import ModelsRegistry
@@ -100,3 +102,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="diart-server", version="0.1.0", lifespan=lifespan)
 app.include_router(probes_router)
 app.include_router(ws_router)
+
+# Browser-side demo: upload a file → stream to /v1/diarize/stream → render
+# timeline + segments. Served from /demo/ (static SPA, single index.html).
+# The package's static dir is shipped via setup.cfg's package_data so it
+# works for both editable and installed (docker) layouts.
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/demo", StaticFiles(directory=str(_STATIC_DIR), html=True), name="demo")
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    """Redirect bare visits to the browser demo."""
+    return RedirectResponse(url="/demo/", status_code=307)

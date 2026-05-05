@@ -12,16 +12,31 @@
 
 ### 镜像两条 tag
 
-| Tag | 基底 | 体积估算 | 运行依赖 |
+| Tag | 基底 | 体积实测 | 运行依赖 |
 |---|---|---|---|
-| `image:cpu` | `python:3.11-slim` | ~2GB | 普通 docker |
-| `image:gpu` | `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04` | ~5–7GB | nvidia-container-runtime |
+| `image:cpu` | `python:3.11-slim` | **3.22GB** | 普通 docker |
+| `image:gpu` | `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04` | ~5–7GB（未实测） | nvidia-container-runtime |
 
 ### 服务能力
 
+- **浏览器 demo**：`/demo/`（上传音频 → 时间轴可视化 → 按 speaker 着色，方便人工比对）。`/` 自动 307 重定向到 `/demo/`
 - WebSocket：`/v1/diarize/stream`（多路并发，默认上限 8 路）
-- 健康/就绪/信息：`/healthz`、`/readyz`、`/v1/info`
+- 健康 / 就绪 / 信息：`/healthz`、`/readyz`、`/v1/info`
 - Prometheus 指标：`/metrics`
+
+### 一行启动（demo + API 一起映射出来）
+
+```bash
+docker run -d --name diart-server -p 7007:7007 diart-server:cpu-0.1.0
+# 等待 ~5s warm-up 完成，浏览器打开 http://localhost:7007/
+```
+
+| URL | 用途 |
+|---|---|
+| `http://localhost:7007/` | 自动跳到 demo |
+| `http://localhost:7007/demo/` | 上传 wav → 看说话人分段时间轴 |
+| `http://localhost:7007/v1/info` | 查模型清单 / 设备 |
+| `http://localhost:7007/readyz` | 健康检查 |
 
 ---
 

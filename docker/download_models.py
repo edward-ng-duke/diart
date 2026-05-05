@@ -9,10 +9,14 @@ Usage:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download, snapshot_download
 from pyannote.audio import Model
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_S = 5  # 5s, 10s, 20s
 
 
 def _is_complete(target: Path, backend: str) -> bool:
@@ -78,7 +82,9 @@ def main(out_dir: Path) -> None:
                 target.unlink()
 
         print(f"[download] {hf_name} -> {target}")
-        try:
+
+        def _do_download() -> None:
+            """Inner function so retries can re-call without duplicating logic."""
             if backend in ("pyannote", "speechbrain", "nemo"):
                 snapshot_download(
                     repo_id=hf_name,
@@ -105,11 +111,29 @@ def main(out_dir: Path) -> None:
                         target.unlink()
                     target.symlink_to(resolved.name)
             else:
-                print(f"[error] unknown backend: {backend!r} for {hf_name}", file=sys.stderr)
-                failures.append(hf_name)
-                continue
-        except Exception as exc:  # noqa: BLE001 - surface any download error
-            print(f"[error] failed to download {hf_name}: {exc}", file=sys.stderr)
+                raise ValueError(f"unknown backend: {backend!r}")
+
+        # Retry transient network errors (ConnectTimeout, 503s, etc.). docker
+        # build's NAT'd network is noticeably less reliable than the host;
+        # nvidia/titanet in particular tends to ConnectTimeout on cold runs.
+        last_exc = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                _do_download()
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < MAX_RETRIES:
+                    sleep_s = RETRY_BACKOFF_S * (2 ** (attempt - 1))
+                    print(
+                        f"[retry] {hf_name} attempt {attempt}/{MAX_RETRIES} failed "
+                        f"({type(exc).__name__}); sleeping {sleep_s}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(sleep_s)
+        if last_exc is not None:
+            print(f"[error] failed to download {hf_name} after {MAX_RETRIES} attempts: {last_exc}", file=sys.stderr)
             failures.append(hf_name)
             continue
 

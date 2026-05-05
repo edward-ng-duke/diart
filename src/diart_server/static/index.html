@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Diart · Speaker Diarization Demo</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --panel-2: #1a1e25;
+    --text: #e6e8eb;
+    --muted: #8b929c;
+    --accent: #6366f1;
+    --border: #262b33;
+    --sp0: #6366f1;
+    --sp1: #f59e0b;
+    --sp2: #10b981;
+    --sp3: #ef4444;
+    --sp4: #8b5cf6;
+    --sp5: #ec4899;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 28px 24px 80px;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+  }
+  header h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  header .meta { font-size: 12px; color: var(--muted); }
+  header .meta a { color: var(--accent); text-decoration: none; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  /* Upload */
+  .upload-row { display: flex; gap: 12px; align-items: center; }
+  input[type=file] { display: none; }
+  .btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 9px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: background 120ms;
+  }
+  .btn:hover { background: #232932; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .btn.primary:hover { background: #5457dc; }
+  .filename { color: var(--muted); font-size: 13px; margin-left: 4px; }
+  /* Controls */
+  audio { width: 100%; height: 36px; margin-bottom: 12px; filter: invert(0.92); }
+  .timeline-wrap { position: relative; }
+  canvas#timeline {
+    width: 100%;
+    height: 110px;
+    display: block;
+    border-radius: 6px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+  .ruler { color: var(--muted); font-size: 11px; margin-top: 4px; padding: 0 2px; }
+  /* Status / progress */
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted);
+    font-size: 13px;
+    min-height: 20px;
+  }
+  .status .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .status.busy .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .status.error .dot { background: var(--sp3); }
+  .status.ok .dot { background: var(--sp2); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  /* Segments */
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 13px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 14px; height: 14px; border-radius: 3px;
+  }
+  table.segments {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  table.segments th, table.segments td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  table.segments th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  table.segments tr:hover td { background: var(--panel-2); }
+  table.segments .sp-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  table.segments .play-cell { width: 1px; white-space: nowrap; }
+  .play-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .play-btn:hover { background: var(--panel-2); }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+  }
+  .stat {
+    background: var(--panel-2);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .stat .value { font-size: 18px; font-variant-numeric: tabular-nums; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
+  pre.rttm {
+    background: #0d0f12;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 12px;
+    overflow-x: auto;
+    color: #c8ccd3;
+    margin: 8px 0 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Diart · Speaker Diarization Demo</h1>
+    <div class="meta">
+      <a href="/v1/info" target="_blank">/v1/info</a> ·
+      <a href="https://github.com/juanmc2005/diart" target="_blank">diart</a>
+    </div>
+  </header>
+
+  <!-- Upload -->
+  <div class="panel">
+    <h2>1 · Upload audio</h2>
+    <div class="upload-row">
+      <label class="btn" for="file-input">选择文件</label>
+      <input id="file-input" type="file" accept="audio/*">
+      <span class="filename" id="filename">no file selected</span>
+      <span style="flex:1"></span>
+      <button class="btn primary" id="run-btn" disabled>开始分析</button>
+    </div>
+    <div class="status" id="status" style="margin-top: 12px;">
+      <span class="dot"></span><span id="status-text">idle</span>
+    </div>
+  </div>
+
+  <!-- Player + timeline -->
+  <div class="panel" id="player-panel" style="display:none">
+    <h2>2 · Player &amp; timeline</h2>
+    <audio id="player" controls preload="auto"></audio>
+    <div class="timeline-wrap">
+      <canvas id="timeline" width="2000" height="220"></canvas>
+    </div>
+    <div class="ruler" id="ruler"></div>
+  </div>
+
+  <!-- Segments -->
+  <div class="panel" id="segments-panel" style="display:none">
+    <h2>3 · Segments</h2>
+    <div class="legend" id="legend"></div>
+    <table class="segments">
+      <thead>
+        <tr>
+          <th>#</th><th>Speaker</th><th>Start</th><th>End</th><th>Dur</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="seg-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- Stats + raw RTTM -->
+  <div class="panel" id="stats-panel" style="display:none">
+    <h2>4 · Summary</h2>
+    <div class="stats-grid" id="stats"></div>
+    <details style="margin-top: 14px;">
+      <summary>Raw RTTM</summary>
+      <pre class="rttm" id="rttm"></pre>
+    </details>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const SP_COLORS = [
+  "var(--sp0)", "var(--sp1)", "var(--sp2)",
+  "var(--sp3)", "var(--sp4)", "var(--sp5)",
+];
+
+// ---------------- DOM helpers ----------------
+const $ = (id) => document.getElementById(id);
+const setStatus = (text, kind = "") => {
+  const el = $("status"); el.className = "status " + kind;
+  $("status-text").textContent = text;
+};
+
+// ---------------- Audio decode + resample ----------------
+async function decodeAndResample(file, targetSr = 16000) {
+  const arrayBuf = await file.arrayBuffer();
+  // Use any sample rate to decode; will resample below.
+  const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuf = await decodeCtx.decodeAudioData(arrayBuf.slice(0));
+  decodeCtx.close();
+
+  // Mix to mono, resample to targetSr via OfflineAudioContext.
+  const numChan = audioBuf.numberOfChannels;
+  const lenAtTarget = Math.ceil(audioBuf.duration * targetSr);
+  const offline = new OfflineAudioContext(1, lenAtTarget, targetSr);
+  const src = offline.createBufferSource();
+  // Build mono buffer to feed (averaging channels) at original sample rate.
+  const mono = offline.createBuffer(1, audioBuf.length, audioBuf.sampleRate);
+  const monoData = mono.getChannelData(0);
+  for (let c = 0; c < numChan; c++) {
+    const ch = audioBuf.getChannelData(c);
+    for (let i = 0; i < ch.length; i++) monoData[i] += ch[i] / numChan;
+  }
+  src.buffer = mono;
+  src.connect(offline.destination);
+  src.start();
+  const rendered = await offline.startRendering();
+  return rendered.getChannelData(0);  // Float32Array @ targetSr
+}
+
+// ---------------- WebSocket diarization ----------------
+async function diarize(pcm, sr, onProgress) {
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${wsProto}://${location.host}/v1/diarize/stream?sample_rate=${sr}`;
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+
+    let predictions = [];
+    let final = null;
+    let error = null;
+    let ready = null;
+
+    ws.onopen = () => {
+      // We can't send before "ready"; wait for it then push frames.
+    };
+
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "ready") {
+        ready = msg;
+        // Stream PCM in 0.5s chunks (8000 samples @ 16kHz).
+        const chunkSize = Math.floor(sr * 0.5);
+        let i = 0;
+        const pump = () => {
+          if (i >= pcm.length) {
+            ws.send(JSON.stringify({ type: "end" }));
+            return;
+          }
+          const end = Math.min(i + chunkSize, pcm.length);
+          const slice = pcm.subarray(i, end);
+          ws.send(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
+          onProgress({ pushed: end, total: pcm.length, predictions: predictions.length });
+          i = end;
+          // Yield to event loop so onmessage gets a chance to fire.
+          setTimeout(pump, 0);
+        };
+        pump();
+      } else if (msg.type === "prediction") {
+        predictions.push(msg);
+        onProgress({ predictions: predictions.length });
+      } else if (msg.type === "final") {
+        final = msg;
+      } else if (msg.type === "error") {
+        error = msg;
+        reject(new Error(`${msg.code}: ${msg.message}`));
+        ws.close();
+      }
+    };
+
+    ws.onerror = () => reject(new Error("websocket error"));
+    ws.onclose = () => {
+      if (error) return;  // already rejected
+      if (final) resolve({ ready, predictions, final });
+      else reject(new Error("connection closed before final"));
+    };
+  });
+}
+
+// ---------------- RTTM parsing ----------------
+// Each line: SPEAKER <uri> <chan> <start> <dur> <NA> <NA> <speaker> <NA> <NA>
+function parseRTTM(rttm) {
+  const segs = [];
+  for (const raw of rttm.split("\n")) {
+    const line = raw.trim();
+    if (!line || !line.startsWith("SPEAKER")) continue;
+    const f = line.split(/\s+/);
+    if (f.length < 8) continue;
+    const start = parseFloat(f[3]);
+    const dur = parseFloat(f[4]);
+    const speaker = f[7];
+    if (Number.isFinite(start) && Number.isFinite(dur)) {
+      segs.push({ start, end: start + dur, duration: dur, speaker });
+    }
+  }
+  // Sort by start to make rendering predictable.
+  segs.sort((a, b) => a.start - b.start);
+  return segs;
+}
+
+// ---------------- Speaker color mapping ----------------
+function buildSpeakerColorMap(segs) {
+  const speakers = [...new Set(segs.map((s) => s.speaker))].sort();
+  const map = {};
+  speakers.forEach((sp, i) => {
+    map[sp] = SP_COLORS[i % SP_COLORS.length];
+  });
+  return map;
+}
+
+// ---------------- Timeline canvas ----------------
+const canvas = $("timeline");
+const ctx = canvas.getContext("2d");
+let renderState = null;  // { segs, total, colorMap, currentTime }
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function timeToX(t, total, w) { return (t / total) * w; }
+
+function drawTimeline() {
+  if (!renderState) return;
+  const { segs, total, colorMap, currentTime } = renderState;
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+
+  ctx.clearRect(0, 0, W, H);
+  // Background.
+  ctx.fillStyle = "#1a1e25";
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines every 5s.
+  ctx.strokeStyle = "#262b33";
+  ctx.lineWidth = 1;
+  for (let t = 0; t <= total; t += 5) {
+    const x = timeToX(t, total, W);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+
+  // Group speakers into rows so overlap is visible.
+  const speakers = Object.keys(colorMap).sort();
+  const rowH = Math.min(60, (H - 24) / Math.max(1, speakers.length));
+  const labelW = 76;
+  const trackW = W - labelW - 8;
+
+  speakers.forEach((sp, idx) => {
+    const y = 12 + idx * rowH;
+    // Speaker label.
+    ctx.fillStyle = "#8b929c";
+    ctx.font = "12px -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(sp, 6, y + rowH / 2 - 4);
+    // Track background.
+    ctx.fillStyle = "#0d0f12";
+    ctx.fillRect(labelW, y, trackW, rowH - 8);
+    // Segments for this speaker.
+    ctx.fillStyle = colorMap[sp];
+    for (const s of segs) {
+      if (s.speaker !== sp) continue;
+      const x = labelW + (s.start / total) * trackW;
+      const w = Math.max(1, (s.duration / total) * trackW);
+      ctx.fillRect(x, y, w, rowH - 8);
+    }
+  });
+
+  // Current playback position cursor.
+  if (typeof currentTime === "number" && total > 0) {
+    const x = labelW + (currentTime / total) * trackW;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, 4); ctx.lineTo(x, H - 4); ctx.stroke();
+  }
+}
+
+function attachTimelineClick(player, total) {
+  canvas.onclick = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const labelW = 76;
+    if (x < labelW) return;
+    const t = ((x - labelW) / (rect.width - labelW - 8)) * total;
+    if (t >= 0 && t <= total) {
+      player.currentTime = t;
+      player.play();
+    }
+  };
+}
+
+// ---------------- Render UI ----------------
+function fmtTime(t) {
+  const m = Math.floor(t / 60), s = (t - m * 60).toFixed(2);
+  return `${m}:${s.padStart(5, "0")}`;
+}
+
+function renderResult(file, ready, final) {
+  const segs = parseRTTM(final.rttm);
+  const colorMap = buildSpeakerColorMap(segs);
+
+  // Player.
+  const player = $("player");
+  player.src = URL.createObjectURL(file);
+  $("player-panel").style.display = "";
+
+  // Timeline.
+  resizeCanvas();
+  renderState = { segs, total: final.duration, colorMap, currentTime: 0 };
+  drawTimeline();
+  attachTimelineClick(player, final.duration);
+  player.addEventListener("timeupdate", () => {
+    renderState.currentTime = player.currentTime;
+    drawTimeline();
+  });
+
+  // Ruler.
+  const ruler = $("ruler");
+  const ticks = [];
+  for (let t = 0; t <= final.duration; t += Math.max(1, Math.ceil(final.duration / 12))) {
+    ticks.push(`${fmtTime(t)}`);
+  }
+  ruler.textContent = `0:00${" ".repeat(80)}${fmtTime(final.duration)}`;
+
+  // Legend.
+  const legend = $("legend");
+  legend.innerHTML = "";
+  for (const sp of Object.keys(colorMap).sort()) {
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<span class="legend-swatch" style="background:${colorMap[sp]}"></span><span>${sp}</span>`;
+    legend.appendChild(item);
+  }
+
+  // Segments table.
+  const tbody = $("seg-tbody");
+  tbody.innerHTML = "";
+  segs.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${i + 1}</td>
+      <td><span class="sp-pill" style="background:${colorMap[s.speaker]};color:#0b0d10">${s.speaker}</span></td>
+      <td>${fmtTime(s.start)}</td>
+      <td>${fmtTime(s.end)}</td>
+      <td>${s.duration.toFixed(2)}s</td>
+      <td class="play-cell"><button class="play-btn" data-t="${s.start}">▶ jump</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.onclick = (e) => {
+    if (e.target.classList.contains("play-btn")) {
+      player.currentTime = parseFloat(e.target.dataset.t);
+      player.play();
+    }
+  };
+  $("segments-panel").style.display = "";
+
+  // Stats.
+  const stats = $("stats");
+  stats.innerHTML = `
+    <div class="stat"><div class="label">duration</div><div class="value">${fmtTime(final.duration)}</div></div>
+    <div class="stat"><div class="label">speakers</div><div class="value">${final.num_speakers}</div></div>
+    <div class="stat"><div class="label">segments</div><div class="value">${segs.length}</div></div>
+    <div class="stat"><div class="label">predictions</div><div class="value">${final.stats?.predictions_count ?? "—"}</div></div>
+    <div class="stat"><div class="label">session id</div><div class="value" style="font-size:13px">${ready.session_id.slice(0, 8)}…</div></div>
+    <div class="stat"><div class="label">seg model</div><div class="value" style="font-size:13px">${ready.models.segmentation.split("/").pop()}</div></div>
+  `;
+  $("rttm").textContent = final.rttm;
+  $("stats-panel").style.display = "";
+}
+
+// ---------------- Wiring ----------------
+let pickedFile = null;
+$("file-input").addEventListener("change", (e) => {
+  pickedFile = e.target.files[0] || null;
+  $("filename").textContent = pickedFile ? pickedFile.name : "no file selected";
+  $("run-btn").disabled = !pickedFile;
+  setStatus(pickedFile ? `ready to analyze (${(pickedFile.size / 1024).toFixed(0)} KB)` : "idle");
+});
+
+$("run-btn").addEventListener("click", async () => {
+  if (!pickedFile) return;
+  $("run-btn").disabled = true;
+  try {
+    setStatus("decoding audio...", "busy");
+    const pcm = await decodeAndResample(pickedFile, 16000);
+    setStatus(`decoded ${(pcm.length / 16000).toFixed(2)}s @ 16kHz · running diarization...`, "busy");
+
+    const { ready, predictions, final } = await diarize(pcm, 16000, (p) => {
+      if (p.pushed != null) {
+        const pct = ((p.pushed / p.total) * 100).toFixed(0);
+        setStatus(`pushing audio ${pct}% · ${p.predictions} predictions`, "busy");
+      } else if (p.predictions != null) {
+        setStatus(`processing · ${p.predictions} predictions so far`, "busy");
+      }
+    });
+    setStatus(`done · ${final.num_speakers} speakers · ${final.duration.toFixed(2)}s`, "ok");
+    renderResult(pickedFile, ready, final);
+  } catch (err) {
+    setStatus(`error: ${err.message}`, "error");
+    console.error(err);
+  } finally {
+    $("run-btn").disabled = false;
+  }
+});
+
+window.addEventListener("resize", () => {
+  resizeCanvas();
+  drawTimeline();
+});
+</script>
+</body>
+</html>
