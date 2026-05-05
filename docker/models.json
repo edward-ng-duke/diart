@@ -25,7 +25,8 @@
   },
   {
     "hf_name": "hbredin/wespeaker-voxceleb-resnet34-LM",
-    "local_path": "onnx/wespeaker.onnx",
+    "local_path": "onnx/speaker-embedding.onnx",
+    "filename": "speaker-embedding.onnx",
     "kind": "embedding",
     "backend": "onnx"
   },

@@ -105,7 +105,7 @@ def test_onnx_embedding_dispatch_uses_from_onnx():
     assert out is fake_model
     onnx_loader.assert_called_once()
     pyannote_loader.assert_not_called()
-    expected_path = str(DUMMY_DIR / "onnx/wespeaker.onnx")
+    expected_path = str(DUMMY_DIR / "onnx/speaker-embedding.onnx")
     assert onnx_loader.call_args.args[0] == expected_path
 
 

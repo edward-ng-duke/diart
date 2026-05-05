@@ -61,7 +61,37 @@ class ModelsRegistry:
     @staticmethod
     def _load_manifest(path: Path) -> dict[str, ModelSpec]:
         data = json.loads(path.read_text())
-        return {entry["hf_name"]: ModelSpec(**entry) for entry in data}
+        # ``ModelSpec`` doesn't carry every JSON field (e.g. ``filename``
+        # used by the ONNX downloader). Restrict to the dataclass fields
+        # so optional manifest extensions don't break construction.
+        keep = {"hf_name", "local_path", "kind", "backend"}
+        return {
+            entry["hf_name"]: ModelSpec(**{k: v for k, v in entry.items() if k in keep})
+            for entry in data
+        }
+
+    def _resolve_path(self, spec: ModelSpec) -> str:
+        """Return the path the underlying loader expects.
+
+        - ``onnx`` / ``speechbrain`` / ``nemo``: the ``local_path`` as-is
+          (loader accepts a file or directory).
+        - ``pyannote``: ``Model.from_pretrained`` insists on either a HF
+          repo id or a path to the *checkpoint file* (not the snapshot
+          directory). We always point it at ``pytorch_model.bin`` inside
+          the snapshot, falling back to any sibling ``*.bin``.
+        """
+        base = self.models_dir / spec.local_path
+        if spec.backend != "pyannote":
+            return str(base)
+        candidate = base / "pytorch_model.bin"
+        if candidate.exists():
+            return str(candidate)
+        bins = sorted(base.glob("*.bin")) if base.is_dir() else []
+        if bins:
+            return str(bins[0])
+        # Nothing found yet — return the directory so the loader can raise
+        # a clear "not found" instead of us guessing wrong.
+        return str(base)
 
     def warm_up(
         self,
@@ -95,7 +125,7 @@ class ModelsRegistry:
         spec = self.specs.get(name)
         if spec is None or spec.kind != "segmentation":
             raise ModelNotFoundError(f"segmentation model not found: {name}")
-        local_path = str(self.models_dir / spec.local_path)
+        local_path = self._resolve_path(spec)
         # Time the actual load so dashboards can spot slow disks/network.
         start = time.monotonic()
         if spec.backend == "onnx":
@@ -123,7 +153,7 @@ class ModelsRegistry:
         spec = self.specs.get(name)
         if spec is None or spec.kind != "embedding":
             raise ModelNotFoundError(f"embedding model not found: {name}")
-        local_path = str(self.models_dir / spec.local_path)
+        local_path = self._resolve_path(spec)
         # Time the actual load so dashboards can spot slow disks/network.
         start = time.monotonic()
         if spec.backend == "onnx":
