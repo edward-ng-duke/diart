@@ -1,6 +1,5 @@
 # ───── Stage 1: builder ─────
 FROM python:3.11-slim AS builder
-ARG HF_TOKEN
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git build-essential libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
@@ -9,22 +8,37 @@ WORKDIR /build
 COPY pyproject.toml setup.cfg setup.py README.md ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir torch==2.4.1+cpu torchaudio==2.4.1+cpu torchvision==0.19.1+cpu --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir -e ".[server]"
+# Non-editable install copies diart + diart_server into site-packages so the
+# runtime stage's site-packages COPY brings them along (an editable install
+# only places a .pth pointer to /build/src which doesn't exist in stage 2).
+RUN pip install --no-cache-dir ".[server]"
 
+# Pull models with HF_TOKEN injected as a BuildKit secret. The secret never
+# lands in any image layer or metadata (unlike --build-arg/ENV/ARG, which
+# would trigger SecretsUsedInArgOrEnv warnings and bake the token into
+# `docker history`).
 COPY docker/download_models.py docker/models.json ./docker/
-RUN HF_TOKEN=$HF_TOKEN python docker/download_models.py /app/models
+RUN --mount=type=secret,id=hf_token,required=true \
+    HF_TOKEN="$(cat /run/secrets/hf_token)" \
+    python docker/download_models.py /app/models
 
 # ───── Stage 2: runtime ─────
 FROM python:3.11-slim
+# libportaudio2 is required at import time because diart.sources unconditionally
+# imports the `sounddevice` package (used by MicrophoneAudioSource even though
+# the server-side flow only uses MeetingAudioSource). Without it, uvicorn fails
+# at "OSError: PortAudio library not found" before reaching lifespan.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg libsndfile1 \
+    ffmpeg libsndfile1 libportaudio2 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 diart
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 COPY --from=builder /app/models /app/models
-COPY src/diart_server /app/diart_server
+# Bake the manifest next to the model files so app.py's _resolve_manifest_path
+# finds it without needing the source tree at /build.
+COPY docker/models.json /app/models/models.json
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && chown -R diart:diart /app
 

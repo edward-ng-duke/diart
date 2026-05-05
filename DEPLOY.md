@@ -51,42 +51,50 @@
 
 ## 三、构建 CPU 镜像
 
-### 状态：⚠️ 代码已验证、镜像未跑过 build
+### 状态：✅ 已验证（2026-05-05）
 
-> 我们用 `docker/download_models.py` 直接下载模型 + 真实 pyannote 模型跑通了端到端流程（[followups.md](followups.md) 的 "Verified" 章节），但 **multi-stage docker build + 镜像内 uvicorn 启动**这一步还需要本机首跑。下面命令逐字可用，但 **build 失败可能性最大的是 stage-2 的 site-packages COPY 路径**。
+> 已在本机跑通：build OK、`--network none` 离线 smoke test 通过、容器内 uvicorn 跑完整 30s WebSocket e2e 识别出 2 个 speakers、27 条 prediction、RTTM 输出正常。镜像 ID `159e062e4e83`，体积 **3.22GB**。
+>
+> 首次 build 暴露了 5 个 bug，已全部修复（详见 [followups.md](followups.md) "Bugs found and fixed during docker validation" 章节）。GPU 镜像同步移植了相同修复，但**未跑过 build**（缺 self-hosted GPU runner 时间）。
 
 ### 步骤
 
 ```bash
 cd /path/to/diart
 
-# 1) 把 HF token 写到一个临时文件（用 BuildKit secret 注入更安全）
+# 1) 把 HF token 写到一个临时文件（用 BuildKit secret 注入；不要走 --build-arg）
 echo "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > /tmp/hf_token
+chmod 600 /tmp/hf_token
 
-# 2) 启用 BuildKit + 构建
+# 2) BuildKit + secret mount
 DOCKER_BUILDKIT=1 docker build \
   -f docker/Dockerfile.cpu \
   --secret id=hf_token,src=/tmp/hf_token \
-  --build-arg HF_TOKEN="$(cat /tmp/hf_token)" \
   -t diart-server:cpu-0.1.0 \
   -t diart-server:cpu-latest \
   .
+# Build 流程（约 2 分钟带缓存，10 分钟首跑）：
+#   - Stage1: apt deps -> torch CPU wheel -> pip install diart[server] -> download_models.py
+#   - Stage2: 拷贝 site-packages + models + entrypoint
+# 期间 download_models.py 跑 ~100s 下载 10 个模型到 /app/models
 
 # 3) 清理 secret 文件
 rm /tmp/hf_token
 
-# 4) 检查镜像大小（预期 < 2.5GB）
+# 4) 检查镜像大小（实测 3.22GB；超出 2.5GB 目标，见 followups.md）
 docker images diart-server:cpu-0.1.0
 ```
 
-### 可能的坑（提前打预防针）
+### 已知坑（首次构建踩过、已经修复在 Dockerfile.cpu 里）
 
-| 现象 | 原因 | 修复 |
+| 现象 | 原因 | 当前状态 |
 |---|---|---|
-| `403 Cannot access gated repo` | 没接受 pyannote 协议 | 上 HF 网页接受三个 gated 模型 |
-| `CalledProcessError ... pip install -e .[server]` | python:3.11-slim 缺 `git`/`build-essential` | Dockerfile.cpu 已加，确认 builder stage 完整 |
-| Stage-2 `COPY ... site-packages` 找不到目录 | python:3.11-slim 用 `/usr/local/lib/python3.11/site-packages`（已对齐） | 已对齐；如失败，改为 stage-2 重新 `pip install` |
-| 镜像 > 3GB | torch wheel 没指定 `+cpu` 后缀，下了 GPU 版 | Dockerfile.cpu 已固定 `torch==2.4.1+cpu` |
+| `403 Cannot access gated repo` | 没接受 pyannote 协议 | 接受 https://huggingface.co/pyannote/segmentation 等三个 gated 模型即可（segmentation-3.0 已不 gated） |
+| `ModuleNotFoundError: No module named 'diart'`（容器启动时） | builder 用 editable install (`pip install -e .`) 只放 .pth 指针 | 已改用非 editable `pip install ".[server]"` |
+| `OSError: PortAudio library not found` | `diart.sources` import sounddevice 需要 libportaudio2 | runtime stage apt-get 里已加 |
+| `SecretsUsedInArgOrEnv` warning | `ARG HF_TOKEN` 把 token 烙进 image metadata | 改用 `RUN --mount=type=secret,id=hf_token` |
+| `MANIFEST_PATH` 找不到 models.json | 非 editable install 后 `__file__` 在 site-packages 里 | `app.py` 用 `_resolve_manifest_path` 多候选；Dockerfile 把 `models.json` 拷到 `/app/models/` |
+| smoke test 一直 readyz timeout | `--network none` 让宿主机 curl 触不到端口 | smoke_test.sh 改用 `docker exec ... python urllib.request` |
 
 ### 离线启动 smoke 测试（自动）
 

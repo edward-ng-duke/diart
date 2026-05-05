@@ -59,4 +59,22 @@ _None yet._
 
 - ✅ `python docker/download_models.py /tmp/test_models` produces all **10/10** models (~550MB total). Per-backend completeness check correctly handles partial downloads.
 - ✅ Runtime `ModelsRegistry` loads all 5 backends from local paths (pyannote / speechbrain / nemo / onnx) — verified by importing each and running a forward pass through `pyannote/segmentation-3.0` and `pyannote/segmentation` (v1).
-- ✅ End-to-end TestClient WebSocket flow against REAL models with both **segmentation-3.0** (default) and **segmentation v1** (explicit query): 7 predictions emitted in each run, 512-dim L2-normalized embeddings (|emb|=1.0000), num_speakers=1 on single-speaker sample.wav, RTTM correctly rendered. Inference latency: 33ms/chunk (3.0) and 30ms/chunk (v1) — matches diart README CPU benchmark.
+- ✅ End-to-end TestClient WebSocket flow against REAL models with both **segmentation-3.0** (default) and **segmentation v1** (explicit query): 7 predictions emitted in each run, 512-dim L2-normalized embeddings (|emb|=1.0000), num_speakers=1 on single-speaker 10s slice, RTTM correctly rendered. Inference latency: 33ms/chunk (3.0) and 30ms/chunk (v1) — matches diart README CPU benchmark.
+- ✅ **CPU docker image built and smoke-tested** (`diart-server:cpu-0.1.0`, image id `159e062e4e83`, 3.22GB).
+  - Build: ~2 min (with cached torch wheel layer); model download stage 100s
+  - Offline smoke (`docker run --network none`): `/readyz` ready in 6s, `/v1/info` reports 10 models, exit 0
+  - End-to-end against full 30s sample.wav over real network: 4s startup, 27 predictions, 2 speakers detected, RTTM emitted correctly
+  - Build clean (no `SecretsUsedInArgOrEnv` warning thanks to BuildKit `--mount=type=secret`)
+
+## Bugs found and fixed during docker validation (commit 6704172 follow-on)
+
+1. **`pip install -e .` in builder** left only a `.pth` pointer to `/build/src` which doesn't exist in stage 2 → `ModuleNotFoundError: No module named 'diart'` at runtime. **Fix:** non-editable install (`pip install ".[server]"`) so diart + diart_server actually land in site-packages.
+2. **`ARG HF_TOKEN` baked the token into image metadata** (`SecretsUsedInArgOrEnv` warning, visible in `docker history`). **Fix:** `RUN --mount=type=secret,id=hf_token` reads the token from a tmpfs mount that never lands in any layer.
+3. **Missing `libportaudio2`** in runtime stage → `OSError: PortAudio library not found` because `diart.sources` imports `sounddevice` at module level (even though MicrophoneAudioSource isn't used server-side). **Fix:** added `libportaudio2` to runtime apt-get install.
+4. **`MANIFEST_PATH` was repo-relative**: with non-editable install, `__file__.parent.parent.parent` resolves to `/usr/local/lib/python3.11/`, not the docker layout's `/app/`. **Fix:** new `_resolve_manifest_path()` checks `$DIART_MODELS_MANIFEST` env, then `models_dir/models.json`, then repo-relative; Dockerfile copies `docker/models.json` into `/app/models/models.json`.
+5. **`smoke_test.sh` used host-side curl** but `--network none` disables the docker bridge / port mapping → host curl could never reach the container even after uvicorn bound port 7007. **Fix:** rewrote to use `docker exec ... python -c "urllib.request.urlopen(...)"` (no curl/jq dependency in slim image).
+
+## Open follow-ups (post-build)
+
+- **Image size 3.22GB** vs the 2.5GB target. Main culprit is `torch==2.4.1+cpu` + transitive deps (~1.5GB) + bundled models (~550MB) + pyannote.audio + lightning. Options to slim: drop unused torch components (`torchvision` not used at runtime — could uninstall in stage 2), strip-debug torch shared libs, exclude `.cache/` directories from `snapshot_download`. Defer: not blocking deploy.
+- **GPU image**: `Dockerfile.gpu` was not rebuilt with the same fixes (non-editable install, BuildKit secret, libportaudio2, manifest copy). Should be ported before any GPU build attempt.

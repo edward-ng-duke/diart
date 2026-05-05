@@ -27,8 +27,36 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEGMENTATION = "pyannote/segmentation-3.0"
 DEFAULT_EMBEDDING = "pyannote/embedding"
 
-# Repo layout: src/diart_server/app.py -> repo root -> docker/models.json
-MANIFEST_PATH = Path(__file__).resolve().parent.parent.parent / "docker" / "models.json"
+
+def _resolve_manifest_path() -> Path:
+    """Find ``models.json`` in priority order.
+
+    1. ``$DIART_MODELS_MANIFEST`` (explicit override)
+    2. ``settings.models_dir / "models.json"`` (the docker layout: image
+       bakes the manifest next to the model files)
+    3. ``<repo-root>/docker/models.json`` (the dev layout: src/diart_server
+       lives at repo-root/src/diart_server, so parent.parent.parent is the
+       repo root). Only valid for editable / source-tree runs.
+
+    The first candidate that exists is returned. If none exist, the docker
+    layout candidate is returned anyway so the resulting error message
+    points at the conventional location.
+    """
+    import os
+    explicit = os.environ.get("DIART_MODELS_MANIFEST")
+    if explicit:
+        return Path(explicit)
+    candidates = [
+        Path(settings.models_dir) / "models.json",
+        Path(__file__).resolve().parent.parent.parent / "docker" / "models.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
+MANIFEST_PATH = _resolve_manifest_path()
 
 
 @asynccontextmanager
