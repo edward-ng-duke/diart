@@ -27,38 +27,98 @@
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   .wrap {
-    max-width: 1100px;
+    max-width: 1280px;
     margin: 0 auto;
     padding: 28px 24px 80px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: 1fr; }
+    .params-panel { position: static !important; max-height: none !important; }
+  }
+  .params-panel {
+    position: sticky;
+    top: 16px;
+    align-self: start;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  .params-panel h2 { margin-bottom: 14px; }
+  .param { margin-bottom: 18px; }
+  .param-desc {
+    margin-top: 6px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  .param-desc div { margin-bottom: 1px; }
+  .param-desc div:first-child { color: #c8ccd3; }
+  .param-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .param-head .name {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .param-head .hint {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .slider-row { display: flex; gap: 8px; align-items: center; }
+  .slider-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .num-input {
+    width: 64px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .num-input::-webkit-inner-spin-button,
+  .num-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .actions { display: flex; gap: 8px; margin-top: 6px; }
+  .actions .btn { flex: 1; }
+  .params-note {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    line-height: 1.5;
   }
   header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 28px;
+    margin-bottom: 20px;
     border-bottom: 1px solid var(--border);
     padding-bottom: 16px;
   }
   header h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
   header .meta { font-size: 12px; color: var(--muted); }
   header .meta a { color: var(--accent); text-decoration: none; }
+
   .panel {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 18px 20px;
-    margin-bottom: 16px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
   }
-  .panel h2 {
-    font-size: 13px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 0 0 12px;
-  }
-  /* Upload */
-  .upload-row { display: flex; gap: 12px; align-items: center; }
+
+  /* Upload (compact) */
+  .upload-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   input[type=file] { display: none; }
   .btn {
     background: var(--panel-2);
@@ -72,26 +132,7 @@
     transition: background 120ms;
   }
   .btn:hover { background: #232932; }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .btn.primary:hover { background: #5457dc; }
-  .filename { color: var(--muted); font-size: 13px; margin-left: 4px; }
-  /* Controls */
-  audio { width: 100%; height: 36px; margin-bottom: 12px; filter: invert(0.92); }
-  .timeline-wrap { position: relative; }
-  canvas#timeline {
-    width: 100%;
-    height: 110px;
-    display: block;
-    border-radius: 6px;
-    background: var(--panel-2);
-    cursor: pointer;
-  }
-  .ruler { color: var(--muted); font-size: 11px; margin-top: 4px; padding: 0 2px; }
-  /* Status / progress */
+  .filename { color: var(--muted); font-size: 13px; }
   .status {
     display: flex;
     align-items: center;
@@ -99,6 +140,7 @@
     color: var(--muted);
     font-size: 13px;
     min-height: 20px;
+    margin-top: 10px;
   }
   .status .dot {
     width: 8px; height: 8px; border-radius: 50%;
@@ -108,12 +150,132 @@
   .status.error .dot { background: var(--sp3); }
   .status.ok .dot { background: var(--sp2); }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-  /* Segments */
-  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 13px; }
-  .legend-item { display: flex; align-items: center; gap: 6px; }
-  .legend-swatch {
-    width: 14px; height: 14px; border-radius: 3px;
+
+  /* Audio player */
+  audio { width: 100%; height: 40px; display: block; filter: invert(0.92); }
+
+  /* Now-speaking — the star of the page */
+  .now-speaking {
+    text-align: center;
+    padding: 64px 24px;
+    border-radius: 16px;
+    background: var(--panel-2);
+    transition: background 220ms ease;
+    border: 1px solid var(--border);
+    margin-bottom: 14px;
   }
+  .ns-label {
+    font-size: 64px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: #0b0d10;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 14px;
+    transition: color 220ms ease;
+  }
+  .ns-time {
+    font-size: 16px;
+    color: rgba(11, 13, 16, 0.72);
+    font-variant-numeric: tabular-nums;
+    transition: color 220ms ease;
+  }
+  .now-speaking[data-active="false"] .ns-label { color: var(--muted); }
+  .now-speaking[data-active="false"] .ns-time { color: var(--muted); }
+
+  /* Live streaming bar */
+  .live-panel { padding: 14px 16px; }
+  .live-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+  }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+  }
+  .live-panel[data-streaming="true"] .live-dot {
+    background: #ef4444;
+    animation: livepulse 1s infinite;
+  }
+  @keyframes livepulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+    70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+  }
+  canvas#live-bar {
+    width: 100%;
+    height: 40px;
+    display: block;
+    border-radius: 4px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+  .live-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    min-height: 18px;
+  }
+  .live-legend .lg {
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .live-legend .sw {
+    width: 12px; height: 12px; border-radius: 3px;
+  }
+
+  /* Details (collapsed by default) */
+  details.panel { padding: 0; }
+  details.panel > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 14px 18px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    user-select: none;
+  }
+  details.panel > summary::-webkit-details-marker { display: none; }
+  details.panel > summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform 120ms;
+    margin-right: 4px;
+  }
+  details.panel[open] > summary::before { content: "▾ "; }
+  details.panel > .details-body { padding: 6px 18px 18px; }
+  details.panel h3 {
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 14px 0 8px;
+  }
+  details.panel h3:first-child { margin-top: 4px; }
+
+  /* Timeline */
+  .timeline-wrap { position: relative; }
+  canvas#timeline {
+    width: 100%;
+    height: 110px;
+    display: block;
+    border-radius: 6px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+
+  /* Segments table */
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; font-size: 13px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
   table.segments {
     width: 100%;
     border-collapse: collapse;
@@ -139,6 +301,7 @@
     border-radius: 999px;
     font-size: 12px;
     font-weight: 500;
+    color: #0b0d10;
   }
   table.segments .play-cell { width: 1px; white-space: nowrap; }
   .play-btn {
@@ -151,6 +314,8 @@
     font-size: 12px;
   }
   .play-btn:hover { background: var(--panel-2); }
+
+  /* Stats */
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -163,7 +328,7 @@
   }
   .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
   .stat .value { font-size: 18px; font-variant-numeric: tabular-nums; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
+
   pre.rttm {
     background: #0d0f12;
     border: 1px solid var(--border);
@@ -186,63 +351,209 @@
     </div>
   </header>
 
-  <!-- Upload -->
-  <div class="panel">
-    <h2>1 · Upload audio</h2>
-    <div class="upload-row">
-      <label class="btn" for="file-input">选择文件</label>
-      <input id="file-input" type="file" accept="audio/*">
-      <span class="filename" id="filename">no file selected</span>
-      <span style="flex:1"></span>
-      <button class="btn primary" id="run-btn" disabled>开始分析</button>
+  <div class="layout">
+
+  <aside class="panel params-panel">
+    <h2>参数</h2>
+    <div id="params-list"></div>
+    <div class="actions">
+      <button class="btn" id="reset-btn" type="button">重置默认</button>
+      <button class="btn primary" id="reanalyze-btn" type="button" disabled>重新分析</button>
     </div>
-    <div class="status" id="status" style="margin-top: 12px;">
+    <div class="params-note">
+      改完阈值后点 <b>重新分析</b>（同一文件不重新解码）。
+      <br>↓ <code>delta_new</code> → 类更多｜↑ → 类更少。
+      <br><code>max_speakers</code> 是硬上限。
+    </div>
+  </aside>
+
+  <main>
+
+  <!-- Upload (compact) -->
+  <div class="panel">
+    <div class="upload-row">
+      <label class="btn" for="file-input">选择音频文件</label>
+      <input id="file-input" type="file" accept="audio/*">
+      <span class="filename" id="filename">未选择文件</span>
+    </div>
+    <div class="status" id="status">
       <span class="dot"></span><span id="status-text">idle</span>
     </div>
   </div>
 
-  <!-- Player + timeline -->
+  <!-- Player -->
   <div class="panel" id="player-panel" style="display:none">
-    <h2>2 · Player &amp; timeline</h2>
     <audio id="player" controls preload="auto"></audio>
-    <div class="timeline-wrap">
-      <canvas id="timeline" width="2000" height="220"></canvas>
+  </div>
+
+  <!-- Now-speaking — the star -->
+  <div class="now-speaking" id="now-speaking" data-active="false" style="display:none">
+    <div class="ns-label" id="ns-label">—</div>
+    <div class="ns-time" id="ns-time"></div>
+  </div>
+
+  <!-- Live streaming progress: cursor leads, predictions paint behind -->
+  <div class="panel live-panel" id="live-panel" style="display:none">
+    <div class="live-head">
+      <span class="live-dot" id="live-dot"></span>
+      <span id="live-counters">streaming…</span>
     </div>
-    <div class="ruler" id="ruler"></div>
+    <canvas id="live-bar" width="2000" height="40"></canvas>
+    <div class="live-legend" id="live-legend"></div>
   </div>
 
-  <!-- Segments -->
-  <div class="panel" id="segments-panel" style="display:none">
-    <h2>3 · Segments</h2>
-    <div class="legend" id="legend"></div>
-    <table class="segments">
-      <thead>
-        <tr>
-          <th>#</th><th>Speaker</th><th>Start</th><th>End</th><th>Dur</th><th></th>
-        </tr>
-      </thead>
-      <tbody id="seg-tbody"></tbody>
-    </table>
-  </div>
+  <!-- Details (collapsed) -->
+  <details class="panel" id="details-panel" style="display:none">
+    <summary>详情 · timeline / segments / 统计 / RTTM</summary>
+    <div class="details-body">
+      <h3>Timeline</h3>
+      <div class="timeline-wrap">
+        <canvas id="timeline" width="2000" height="220"></canvas>
+      </div>
 
-  <!-- Stats + raw RTTM -->
-  <div class="panel" id="stats-panel" style="display:none">
-    <h2>4 · Summary</h2>
-    <div class="stats-grid" id="stats"></div>
-    <details style="margin-top: 14px;">
-      <summary>Raw RTTM</summary>
+      <h3>Segments</h3>
+      <div class="legend" id="legend"></div>
+      <table class="segments">
+        <thead>
+          <tr>
+            <th>#</th><th>Speaker</th><th>Start</th><th>End</th><th>Dur</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="seg-tbody"></tbody>
+      </table>
+
+      <h3>Summary</h3>
+      <div class="stats-grid" id="stats"></div>
+
+      <h3>Raw RTTM</h3>
       <pre class="rttm" id="rttm"></pre>
-    </details>
-  </div>
+    </div>
+  </details>
+
+  </main>
+  </div><!-- /.layout -->
 </div>
 
 <script>
 "use strict";
 
-const SP_COLORS = [
-  "var(--sp0)", "var(--sp1)", "var(--sp2)",
-  "var(--sp3)", "var(--sp4)", "var(--sp5)",
+// Hex literals (not CSS vars): canvas fillStyle ignores `var(...)`, so we
+// need the resolved color. Mirrors :root --sp0..5.
+const SP_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#ec4899"];
+
+// ---------------- Tunable params ----------------
+// Mirrors src/diart_server/protocol.py QueryParams. Defaults + bounds match
+// the server's pydantic validation; keep them in sync if that file changes.
+const PARAMS = [
+  {
+    key: "tau_active", def: 0.507, min: 0, max: 1, step: 0.001,
+    short: "VAD 激活阈值",
+    desc: [
+      '模型给每帧打"在说话"概率，> 此值才算语音。',
+      "↑ 更严格：只留清晰人声｜↓ 把气音/小声/咳嗽也算进来",
+      '不影响"分几类"，影响"哪段被聚类"。',
+    ],
+  },
+  {
+    key: "rho_update", def: 0.006, min: 0, max: 1, step: 0.001,
+    short: "中心更新阈值",
+    desc: [
+      "一段嵌入要多稳定才用来更新已有说话人的中心向量。",
+      "↑ 中心更稳，但适应新口音/情绪慢｜↓ 中心快速吸纳变化但易抖",
+      "默认 0.006 几乎不必动。",
+    ],
+  },
+  {
+    key: "delta_new", def: 1.057, min: 0, max: 2, step: 0.001,
+    short: "新说话人阈值",
+    desc: [
+      "嵌入到最近已有说话人中心的余弦距离 > 此值时，开新 cluster。",
+      "↓ 比如 0.8 → 更易开新人 → 类更多",
+      "↑ 比如 1.3 → 更难开新人 → 类更少",
+      "最常调的参数。",
+    ],
+  },
+  {
+    key: "latency", def: 0.5, min: 0.5, max: 5, step: 0.1,
+    short: "输出延迟 (s)",
+    desc: [
+      "收到帧后多等几秒、看后面内容再 emit 判定。",
+      "↑ 比如 2.0 → 切换点准但整体滞后 2s",
+      "↓ 0.5 → 即时输出但切换会拖 3-5s",
+      '"反应快 vs 切换准" 的核心 tradeoff。',
+    ],
+  },
+  {
+    key: "max_speakers", def: 10, min: 2, max: 20, step: 1,
+    short: "最大说话人数",
+    desc: [
+      "本次会话允许的说话人 cluster 数硬上限。",
+      "已知是 N 人对话 → 设 N，避免误判出第 N+1 人。",
+      '设 N 后，任何"新人"都会被压回最近已有 cluster。',
+    ],
+  },
+  {
+    key: "duration", def: 5.0, min: 1, max: 10, step: 0.5,
+    short: "滑窗长度 (s)",
+    desc: [
+      "每次判定看的历史长度（过去多少秒做一次推断）。",
+      "↓ 比如 3 → 切换快（新人很快占满窗口）但聚类基础薄",
+      "↑ 比如 7 → 聚类更稳但切换更慢",
+    ],
+  },
+  {
+    key: "step", def: 0.5, min: 0.1, max: 1, step: 0.05,
+    short: "滑窗步长 (s)",
+    desc: [
+      "每隔多久 emit 一次 prediction。",
+      "↓ 比如 0.25 → 输出更密、时间分辨率细，但 CPU 多",
+      "跟切换延迟关系不大。",
+    ],
+  },
 ];
+
+function buildParamsUI() {
+  const list = document.getElementById("params-list");
+  list.innerHTML = "";
+  for (const p of PARAMS) {
+    const row = document.createElement("div");
+    row.className = "param";
+    row.innerHTML = `
+      <div class="param-head">
+        <span class="name"><code>${p.key}</code></span>
+        <span class="hint">${p.short}</span>
+      </div>
+      <div class="slider-row">
+        <input type="range" id="p-${p.key}"
+               min="${p.min}" max="${p.max}" step="${p.step}" value="${p.def}">
+        <input type="number" id="n-${p.key}" class="num-input"
+               min="${p.min}" max="${p.max}" step="${p.step}" value="${p.def}">
+      </div>
+      <div class="param-desc">${p.desc.map((line) => `<div>${line}</div>`).join("")}</div>
+    `;
+    list.appendChild(row);
+    const slider = row.querySelector(`#p-${p.key}`);
+    const num = row.querySelector(`#n-${p.key}`);
+    slider.addEventListener("input", () => { num.value = slider.value; });
+    num.addEventListener("input", () => { slider.value = num.value; });
+  }
+}
+
+function getParams() {
+  const out = {};
+  for (const p of PARAMS) {
+    const v = parseFloat(document.getElementById(`p-${p.key}`).value);
+    out[p.key] = p.step >= 1 ? String(Math.round(v)) : String(v);
+  }
+  return out;
+}
+
+function resetParams() {
+  for (const p of PARAMS) {
+    document.getElementById(`p-${p.key}`).value = p.def;
+    document.getElementById(`n-${p.key}`).value = p.def;
+  }
+}
 
 // ---------------- DOM helpers ----------------
 const $ = (id) => document.getElementById(id);
@@ -254,17 +565,14 @@ const setStatus = (text, kind = "") => {
 // ---------------- Audio decode + resample ----------------
 async function decodeAndResample(file, targetSr = 16000) {
   const arrayBuf = await file.arrayBuffer();
-  // Use any sample rate to decode; will resample below.
   const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
   const audioBuf = await decodeCtx.decodeAudioData(arrayBuf.slice(0));
   decodeCtx.close();
 
-  // Mix to mono, resample to targetSr via OfflineAudioContext.
   const numChan = audioBuf.numberOfChannels;
   const lenAtTarget = Math.ceil(audioBuf.duration * targetSr);
   const offline = new OfflineAudioContext(1, lenAtTarget, targetSr);
   const src = offline.createBufferSource();
-  // Build mono buffer to feed (averaging channels) at original sample rate.
   const mono = offline.createBuffer(1, audioBuf.length, audioBuf.sampleRate);
   const monoData = mono.getChannelData(0);
   for (let c = 0; c < numChan; c++) {
@@ -279,9 +587,14 @@ async function decodeAndResample(file, targetSr = 16000) {
 }
 
 // ---------------- WebSocket diarization ----------------
-async function diarize(pcm, sr, onProgress) {
+// Streams `pcm` to /v1/diarize/stream at realtime pace and resolves with
+// {ready, predictions, final}. Callers can hook into the live stream via
+// the optional `onReady`/`onPrediction` callbacks (used by the live bar).
+async function diarize(pcm, sr, params, callbacks = {}) {
+  const { onProgress = () => {}, onPrediction = () => {}, onReady = () => {} } = callbacks;
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${wsProto}://${location.host}/v1/diarize/stream?sample_rate=${sr}`;
+  const qs = new URLSearchParams({ sample_rate: String(sr), ...params });
+  const url = `${wsProto}://${location.host}/v1/diarize/stream?${qs}`;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -291,17 +604,16 @@ async function diarize(pcm, sr, onProgress) {
     let error = null;
     let ready = null;
 
-    ws.onopen = () => {
-      // We can't send before "ready"; wait for it then push frames.
-    };
-
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "ready") {
         ready = msg;
-        // Stream PCM in 0.5s chunks (8000 samples @ 16kHz).
+        onReady(msg);
         const chunkSize = Math.floor(sr * 0.5);
         let i = 0;
+        // Pace at realtime: server's MeetingAudioSource queue is 50 frames
+        // (~25s buffer); blasting drops the tail. Match the API's intended
+        // contract — one ~0.5s chunk every ~0.5s.
         const pump = () => {
           if (i >= pcm.length) {
             ws.send(JSON.stringify({ type: "end" }));
@@ -310,14 +622,15 @@ async function diarize(pcm, sr, onProgress) {
           const end = Math.min(i + chunkSize, pcm.length);
           const slice = pcm.subarray(i, end);
           ws.send(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
-          onProgress({ pushed: end, total: pcm.length, predictions: predictions.length });
+          const sliceMs = ((end - i) / sr) * 1000;
           i = end;
-          // Yield to event loop so onmessage gets a chance to fire.
-          setTimeout(pump, 0);
+          onProgress({ pushed: i, total: pcm.length, predictions: predictions.length });
+          setTimeout(pump, sliceMs);
         };
         pump();
       } else if (msg.type === "prediction") {
         predictions.push(msg);
+        onPrediction(msg);
         onProgress({ predictions: predictions.length });
       } else if (msg.type === "final") {
         final = msg;
@@ -330,7 +643,7 @@ async function diarize(pcm, sr, onProgress) {
 
     ws.onerror = () => reject(new Error("websocket error"));
     ws.onclose = () => {
-      if (error) return;  // already rejected
+      if (error) return;
       if (final) resolve({ ready, predictions, final });
       else reject(new Error("connection closed before final"));
     };
@@ -338,7 +651,6 @@ async function diarize(pcm, sr, onProgress) {
 }
 
 // ---------------- RTTM parsing ----------------
-// Each line: SPEAKER <uri> <chan> <start> <dur> <NA> <NA> <speaker> <NA> <NA>
 function parseRTTM(rttm) {
   const segs = [];
   for (const raw of rttm.split("\n")) {
@@ -353,7 +665,6 @@ function parseRTTM(rttm) {
       segs.push({ start, end: start + dur, duration: dur, speaker });
     }
   }
-  // Sort by start to make rendering predictable.
   segs.sort((a, b) => a.start - b.start);
   return segs;
 }
@@ -368,13 +679,143 @@ function buildSpeakerColorMap(segs) {
   return map;
 }
 
+// ---------------- Live streaming state ----------------
+// Predictions are appended in real time as the WS yields them. renderState
+// shares the same segs[] so the now-speaking card and timeline see live
+// updates too. When `final` arrives, we swap in the consolidated RTTM.
+let liveSegs = [];
+let liveColorMap = {};
+let audioTotalDur = 0;     // decoded duration in seconds (set per file)
+
+function resetLive(durationSec) {
+  liveSegs = [];
+  liveColorMap = {};
+  audioTotalDur = durationSec;
+  $("live-legend").innerHTML = "";
+  $("live-counters").textContent = `streaming · 0 speakers · 0 segments · 0.0/${durationSec.toFixed(1)}s`;
+  $("live-panel").dataset.streaming = "true";
+  $("live-panel").style.display = "";
+  drawLiveBar();
+}
+
+function addLivePrediction(pred) {
+  const seg = {
+    start: pred.start,
+    end: pred.start + pred.duration,
+    duration: pred.duration,
+    speaker: pred.speaker,
+  };
+  liveSegs.push(seg);
+  // Re-bind colors so newly-discovered speakers get a slot. Sort to keep
+  // assignment stable across re-renders.
+  const speakers = [...new Set(liveSegs.map((s) => s.speaker))].sort();
+  liveColorMap = {};
+  speakers.forEach((sp, i) => { liveColorMap[sp] = SP_COLORS[i % SP_COLORS.length]; });
+
+  // Shared with timeline + now-speaking.
+  if (renderState) {
+    renderState.segs = liveSegs;
+    renderState.colorMap = liveColorMap;
+  } else {
+    renderState = { segs: liveSegs, total: audioTotalDur, colorMap: liveColorMap, currentTime: 0 };
+  }
+  drawLiveBar();
+  updateLiveCounters(speakers);
+  updateNowSpeaking();
+}
+
+function updateLiveCounters(speakers) {
+  const lastEnd = liveSegs.length ? Math.max(...liveSegs.map(s => s.end)) : 0;
+  $("live-counters").textContent =
+    `streaming · ${speakers.length} speakers · ${liveSegs.length} segments · `
+    + `${lastEnd.toFixed(1)}/${audioTotalDur.toFixed(1)}s processed`;
+  // Legend chips for each speaker.
+  const legend = $("live-legend");
+  legend.innerHTML = "";
+  for (const sp of speakers) {
+    const totalSec = liveSegs.filter(s => s.speaker === sp).reduce((a, s) => a + s.duration, 0);
+    const item = document.createElement("span");
+    item.className = "lg";
+    item.innerHTML = `<span class="sw" style="background:${liveColorMap[sp]}"></span>${sp} · ${totalSec.toFixed(1)}s`;
+    legend.appendChild(item);
+  }
+}
+
+const liveCanvas = () => $("live-bar");
+function drawLiveBar() {
+  const canvas = liveCanvas();
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = rect.width, H = rect.height;
+  const total = audioTotalDur || 1;
+
+  // Background = unprocessed.
+  ctx.fillStyle = "#1a1e25";
+  ctx.fillRect(0, 0, W, H);
+
+  // Predictions painted in arrival order.
+  for (const s of liveSegs) {
+    const x = (s.start / total) * W;
+    const w = Math.max(1, (s.duration / total) * W);
+    ctx.fillStyle = liveColorMap[s.speaker] || "#3a3f4a";
+    ctx.fillRect(x, 0, w, H);
+  }
+
+  // Cursor at audio.currentTime.
+  const player = $("player");
+  if (player.duration && audioTotalDur > 0) {
+    const x = (player.currentTime / total) * W;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+}
+
+// ---------------- Now-speaking ----------------
+const nsPanel = $("now-speaking");
+const nsLabel = $("ns-label");
+const nsTime = $("ns-time");
+
+function findActiveSegment(segs, t) {
+  // Linear scan from end to favor latest-starting seg when overlap exists.
+  // (Tested with non-overlapping output too — works either way.)
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const s = segs[i];
+    if (s.start <= t && t < s.end) return s;
+  }
+  return null;
+}
+
+function updateNowSpeaking() {
+  if (!renderState) return;
+  const t = $("player").currentTime;
+  const seg = findActiveSegment(renderState.segs, t);
+  if (seg) {
+    nsPanel.style.background = renderState.colorMap[seg.speaker];
+    nsPanel.dataset.active = "true";
+    nsLabel.textContent = seg.speaker;
+    nsTime.textContent = `${fmtTime(seg.start)} → ${fmtTime(seg.end)}  ·  ${seg.duration.toFixed(2)}s`;
+  } else {
+    nsPanel.style.background = "var(--panel-2)";
+    nsPanel.dataset.active = "false";
+    nsLabel.textContent = "— silence —";
+    nsTime.textContent = "";
+  }
+}
+
 // ---------------- Timeline canvas ----------------
 const canvas = $("timeline");
 const ctx = canvas.getContext("2d");
-let renderState = null;  // { segs, total, colorMap, currentTime }
+let renderState = null;
 
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
+  if (rect.width === 0) return;  // hidden inside collapsed <details>
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(rect.width * dpr);
   canvas.height = Math.round(rect.height * dpr);
@@ -385,16 +826,15 @@ function timeToX(t, total, w) { return (t / total) * w; }
 
 function drawTimeline() {
   if (!renderState) return;
-  const { segs, total, colorMap, currentTime } = renderState;
   const rect = canvas.getBoundingClientRect();
+  if (rect.width === 0) return;  // canvas inside closed <details> has 0 size
+  const { segs, total, colorMap, currentTime } = renderState;
   const W = rect.width, H = rect.height;
 
   ctx.clearRect(0, 0, W, H);
-  // Background.
   ctx.fillStyle = "#1a1e25";
   ctx.fillRect(0, 0, W, H);
 
-  // Grid lines every 5s.
   ctx.strokeStyle = "#262b33";
   ctx.lineWidth = 1;
   for (let t = 0; t <= total; t += 5) {
@@ -402,7 +842,6 @@ function drawTimeline() {
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
   }
 
-  // Group speakers into rows so overlap is visible.
   const speakers = Object.keys(colorMap).sort();
   const rowH = Math.min(60, (H - 24) / Math.max(1, speakers.length));
   const labelW = 76;
@@ -410,15 +849,12 @@ function drawTimeline() {
 
   speakers.forEach((sp, idx) => {
     const y = 12 + idx * rowH;
-    // Speaker label.
     ctx.fillStyle = "#8b929c";
     ctx.font = "12px -apple-system, sans-serif";
     ctx.textBaseline = "middle";
     ctx.fillText(sp, 6, y + rowH / 2 - 4);
-    // Track background.
     ctx.fillStyle = "#0d0f12";
     ctx.fillRect(labelW, y, trackW, rowH - 8);
-    // Segments for this speaker.
     ctx.fillStyle = colorMap[sp];
     for (const s of segs) {
       if (s.speaker !== sp) continue;
@@ -428,7 +864,6 @@ function drawTimeline() {
     }
   });
 
-  // Current playback position cursor.
   if (typeof currentTime === "number" && total > 0) {
     const x = labelW + (currentTime / total) * trackW;
     ctx.strokeStyle = "#ffffff";
@@ -457,32 +892,44 @@ function fmtTime(t) {
   return `${m}:${s.padStart(5, "0")}`;
 }
 
+let _timeupdateAttached = false;
+let _lastFileRef = null;
+
 function renderResult(file, ready, final) {
   const segs = parseRTTM(final.rttm);
   const colorMap = buildSpeakerColorMap(segs);
 
-  // Player.
+  // Player. Only swap src when the file actually changes — re-analyzing the
+  // same audio with new params keeps playback position.
   const player = $("player");
-  player.src = URL.createObjectURL(file);
+  if (_lastFileRef !== file) {
+    player.src = URL.createObjectURL(file);
+    _lastFileRef = file;
+  }
   $("player-panel").style.display = "";
 
-  // Timeline.
-  resizeCanvas();
-  renderState = { segs, total: final.duration, colorMap, currentTime: 0 };
-  drawTimeline();
-  attachTimelineClick(player, final.duration);
-  player.addEventListener("timeupdate", () => {
-    renderState.currentTime = player.currentTime;
-    drawTimeline();
-  });
+  // Now-speaking card visible.
+  $("now-speaking").style.display = "";
 
-  // Ruler.
-  const ruler = $("ruler");
-  const ticks = [];
-  for (let t = 0; t <= final.duration; t += Math.max(1, Math.ceil(final.duration / 12))) {
-    ticks.push(`${fmtTime(t)}`);
+  // Render state shared across timeline + now-speaking.
+  renderState = { segs, total: final.duration, colorMap, currentTime: player.currentTime || 0 };
+
+  // Attach timeupdate once; the closure reads from renderState which we
+  // mutate on each re-analyze.
+  if (!_timeupdateAttached) {
+    player.addEventListener("timeupdate", () => {
+      if (!renderState) return;
+      renderState.currentTime = player.currentTime;
+      updateNowSpeaking();
+      drawLiveBar();
+      if ($("details-panel").open) drawTimeline();
+    });
+    _timeupdateAttached = true;
   }
-  ruler.textContent = `0:00${" ".repeat(80)}${fmtTime(final.duration)}`;
+  updateNowSpeaking();
+
+  // Timeline (lazy: only resize/draw when details opens).
+  attachTimelineClick(player, final.duration);
 
   // Legend.
   const legend = $("legend");
@@ -501,7 +948,7 @@ function renderResult(file, ready, final) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td><span class="sp-pill" style="background:${colorMap[s.speaker]};color:#0b0d10">${s.speaker}</span></td>
+      <td><span class="sp-pill" style="background:${colorMap[s.speaker]}">${s.speaker}</span></td>
       <td>${fmtTime(s.start)}</td>
       <td>${fmtTime(s.end)}</td>
       <td>${s.duration.toFixed(2)}s</td>
@@ -515,11 +962,9 @@ function renderResult(file, ready, final) {
       player.play();
     }
   };
-  $("segments-panel").style.display = "";
 
   // Stats.
-  const stats = $("stats");
-  stats.innerHTML = `
+  $("stats").innerHTML = `
     <div class="stat"><div class="label">duration</div><div class="value">${fmtTime(final.duration)}</div></div>
     <div class="stat"><div class="label">speakers</div><div class="value">${final.num_speakers}</div></div>
     <div class="stat"><div class="label">segments</div><div class="value">${segs.length}</div></div>
@@ -528,47 +973,139 @@ function renderResult(file, ready, final) {
     <div class="stat"><div class="label">seg model</div><div class="value" style="font-size:13px">${ready.models.segmentation.split("/").pop()}</div></div>
   `;
   $("rttm").textContent = final.rttm;
-  $("stats-panel").style.display = "";
+  $("details-panel").style.display = "";
 }
 
 // ---------------- Wiring ----------------
 let pickedFile = null;
-$("file-input").addEventListener("change", (e) => {
-  pickedFile = e.target.files[0] || null;
-  $("filename").textContent = pickedFile ? pickedFile.name : "no file selected";
-  $("run-btn").disabled = !pickedFile;
-  setStatus(pickedFile ? `ready to analyze (${(pickedFile.size / 1024).toFixed(0)} KB)` : "idle");
-});
+let cachedPcm = null;          // Float32Array @ 16k for pickedFile (cache to avoid re-decode)
+let analysisInFlight = false;
 
-$("run-btn").addEventListener("click", async () => {
-  if (!pickedFile) return;
-  $("run-btn").disabled = true;
+async function runAnalysis({ autoplay }) {
+  if (!pickedFile || analysisInFlight) return;
+  analysisInFlight = true;
+  $("reanalyze-btn").disabled = true;
   try {
-    setStatus("decoding audio...", "busy");
-    const pcm = await decodeAndResample(pickedFile, 16000);
-    setStatus(`decoded ${(pcm.length / 16000).toFixed(2)}s @ 16kHz · running diarization...`, "busy");
+    if (!cachedPcm) {
+      setStatus("decoding audio...", "busy");
+      cachedPcm = await decodeAndResample(pickedFile, 16000);
+    }
+    const audioSec = cachedPcm.length / 16000;
+    const params = getParams();
 
-    const { ready, predictions, final } = await diarize(pcm, 16000, (p) => {
-      if (p.pushed != null) {
-        const pct = ((p.pushed / p.total) * 100).toFixed(0);
-        setStatus(`pushing audio ${pct}% · ${p.predictions} predictions`, "busy");
-      } else if (p.predictions != null) {
-        setStatus(`processing · ${p.predictions} predictions so far`, "busy");
-      }
+    // Set up player + reset live state BEFORE opening the WS. Then start
+    // playback so realtime push and audio playback move together — that's
+    // the whole point of the streaming demo.
+    const player = $("player");
+    if (_lastFileRef !== pickedFile) {
+      player.src = URL.createObjectURL(pickedFile);
+      _lastFileRef = pickedFile;
+    }
+    $("player-panel").style.display = "";
+    $("now-speaking").style.display = "";
+    $("ns-label").textContent = "— warming up —";
+    $("ns-time").textContent = "";
+    $("now-speaking").dataset.active = "false";
+    $("now-speaking").style.background = "var(--panel-2)";
+
+    resetLive(audioSec);
+    // Make sure the timeupdate listener (which redraws the live bar) is
+    // attached before playback starts. renderResult attaches it lazily on
+    // first call; if this is a re-analyze, it's already there.
+    if (!_timeupdateAttached) {
+      player.addEventListener("timeupdate", () => {
+        if (!renderState) return;
+        renderState.currentTime = player.currentTime;
+        updateNowSpeaking();
+        drawLiveBar();
+        if ($("details-panel").open) drawTimeline();
+      });
+      _timeupdateAttached = true;
+    }
+    renderState = { segs: liveSegs, total: audioSec, colorMap: liveColorMap, currentTime: 0 };
+
+    if (autoplay) {
+      player.currentTime = 0;
+      player.play().catch(() => {});
+    }
+
+    setStatus(
+      `streaming with ${Object.entries(params).map(([k, v]) => `${k}=${v}`).join(" ")}`,
+      "busy"
+    );
+
+    const { ready, final } = await diarize(cachedPcm, 16000, params, {
+      onPrediction: addLivePrediction,
+      onProgress: (p) => {
+        if (p.pushed != null) {
+          const pct = ((p.pushed / p.total) * 100).toFixed(0);
+          const remainingSec = Math.max(0, (p.total - p.pushed) / 16000);
+          setStatus(
+            `pushing ${pct}% · ${remainingSec.toFixed(0)}s left · ${p.predictions} predictions`,
+            "busy"
+          );
+        }
+      },
     });
     setStatus(`done · ${final.num_speakers} speakers · ${final.duration.toFixed(2)}s`, "ok");
+    $("live-panel").dataset.streaming = "false";
+    $("live-counters").textContent =
+      `done · ${final.num_speakers} speakers · ${final.stats?.predictions_count ?? "—"} predictions · ${final.duration.toFixed(2)}s`;
+    // Sync live state to the consolidated RTTM so the bar shows the cleaner
+    // post-final view, and renderResult sees the same colors.
+    liveSegs = parseRTTM(final.rttm);
+    const finalSpeakers = [...new Set(liveSegs.map((s) => s.speaker))].sort();
+    liveColorMap = {};
+    finalSpeakers.forEach((sp, i) => { liveColorMap[sp] = SP_COLORS[i % SP_COLORS.length]; });
+    drawLiveBar();
     renderResult(pickedFile, ready, final);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
+    $("live-panel").dataset.streaming = "false";
     console.error(err);
   } finally {
-    $("run-btn").disabled = false;
+    analysisInFlight = false;
+    $("reanalyze-btn").disabled = !pickedFile;
+  }
+}
+
+buildParamsUI();
+
+$("file-input").addEventListener("change", (e) => {
+  const file = e.target.files[0] || null;
+  if (!file) return;
+  pickedFile = file;
+  cachedPcm = null;            // new file → invalidate decoded PCM cache
+  $("filename").textContent = file.name;
+  $("reanalyze-btn").disabled = false;
+  runAnalysis({ autoplay: true });
+});
+
+$("reanalyze-btn").addEventListener("click", () => runAnalysis({ autoplay: false }));
+$("reset-btn").addEventListener("click", () => resetParams());
+
+// Re-draw timeline when details opens (canvas needs non-zero size to render).
+$("details-panel").addEventListener("toggle", () => {
+  if ($("details-panel").open) {
+    requestAnimationFrame(() => { resizeCanvas(); drawTimeline(); });
   }
 });
 
 window.addEventListener("resize", () => {
   resizeCanvas();
   drawTimeline();
+  drawLiveBar();
+});
+
+// Click on the live bar to seek the player (handy for inspecting segments).
+$("live-bar").addEventListener("click", (e) => {
+  if (audioTotalDur <= 0) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const t = Math.max(0, Math.min(audioTotalDur, (x / rect.width) * audioTotalDur));
+  const player = $("player");
+  player.currentTime = t;
+  player.play().catch(() => {});
 });
 </script>
 </body>
