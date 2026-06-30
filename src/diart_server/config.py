@@ -31,6 +31,30 @@ class Settings(BaseSettings):
         default=10485760, validation_alias="DIART_MAX_FRAME_BYTES"
     )
     log_level: str = Field(default="INFO", validation_alias="DIART_LOG_LEVEL")
+    voiceprints_dir: Path = Field(
+        default=Path("voiceprints"), validation_alias="DIART_VOICEPRINTS_DIR"
+    )
+    asr_base_url: str = Field(
+        default="http://10.0.0.32:6001/v1", validation_alias="DIART_ASR_BASE_URL"
+    )
+    asr_model: str = Field(
+        default="models/Qwen3-ASR-1.7B", validation_alias="DIART_ASR_MODEL"
+    )
+    asr_api_key: str = Field(default="EMPTY", validation_alias="DIART_ASR_API_KEY")
+    asr_timeout: float = Field(default=60, validation_alias="DIART_ASR_TIMEOUT")
+    match_threshold: float = Field(
+        default=0.5, validation_alias="DIART_MATCH_THRESHOLD"
+    )
+    silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
+    max_turn_seconds: float = Field(
+        default=20.0, validation_alias="DIART_MAX_TURN_SECONDS"
+    )
+    ring_buffer_seconds: float = Field(
+        default=120.0, validation_alias="DIART_RING_BUFFER_SECONDS"
+    )
+    max_asr_concurrency: int = Field(
+        default=2, validation_alias="DIART_MAX_ASR_CONCURRENCY"
+    )
 
 
 settings = Settings()
