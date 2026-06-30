@@ -27,17 +27,28 @@ class PcmRingBuffer:
         pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
         with self._lock:
             n = pcm.size
+            if n == 0:
+                return
             if n >= self._capacity:
-                self._buf[:] = pcm[-self._capacity:]
+                # Only the most recent `capacity` samples survive. Write them
+                # at their true ring positions so the absolute-index -> position
+                # mapping (s % capacity) that slice() relies on still holds.
+                tail = pcm[-self._capacity:]
+                start = (self._total + n - self._capacity) % self._capacity
+                first = self._capacity - start
+                self._buf[start:] = tail[:first]
+                if first < self._capacity:
+                    self._buf[:start] = tail[first:]
+                self._total += n
+                return
+            start = self._total % self._capacity
+            end = start + n
+            if end <= self._capacity:
+                self._buf[start:end] = pcm
             else:
-                start = self._total % self._capacity
-                end = start + n
-                if end <= self._capacity:
-                    self._buf[start:end] = pcm
-                else:
-                    first = self._capacity - start
-                    self._buf[start:] = pcm[:first]
-                    self._buf[: n - first] = pcm[first:]
+                first = self._capacity - start
+                self._buf[start:] = pcm[:first]
+                self._buf[: n - first] = pcm[first:]
             self._total += n
 
     def slice(self, t0: float, t1: float) -> np.ndarray | None:
