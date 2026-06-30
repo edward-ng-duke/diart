@@ -49,7 +49,10 @@ class PcmRingBuffer:
             s1 = min(s1, self._total)
             if s1 <= s0:
                 return None
-            out = np.empty(s1 - s0, dtype=np.float32)
-            for i, s in enumerate(range(s0, s1)):
-                out[i] = self._buf[s % self._capacity]
-            return out
+            n = s1 - s0
+            a = s0 % self._capacity
+            end = a + n
+            if end <= self._capacity:
+                return self._buf[a:end].copy()
+            first = self._capacity - a
+            return np.concatenate((self._buf[a:], self._buf[: n - first]))
