@@ -21,6 +21,7 @@ runtime behaviour (``start``, ``push_pcm``, ``close``, ``_run``,
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import time
 import uuid
@@ -167,9 +168,9 @@ class DiarizationSession:
         self.aggregator: TurnAggregator = TurnAggregator(
             settings.silence_gap, settings.max_turn_seconds
         )
-        self._last_match: dict[str, tuple] = {}
+        self._last_match: dict[str, tuple[Optional[str], Optional[float]]] = {}
         self._asr_sem: Optional[asyncio.Semaphore] = None
-        self._asr_tasks: set = set()
+        self._asr_futures: set = set()
 
     # ------------------------------------------------------------------
     # Outbound payloads
@@ -253,13 +254,29 @@ class DiarizationSession:
             metrics.session_duration.observe(time.monotonic() - self._started_at)
             self._started_at = None  # idempotent close
 
-        # Flush any still-open turns into the ASR pipeline and wait for
-        # all pending ASR tasks to complete before building the summary.
-        for ft in self.aggregator.flush(self.ring.total_seconds):
-            self._asr_tasks.add(asyncio.ensure_future(self._handle_turn(ft)))
-        if self._asr_tasks:
-            await asyncio.wait(
-                self._asr_tasks, timeout=settings.asr_timeout + 5
+        # Flush still-open turns (run on this loop) and also wait for any ASR
+        # tasks already dispatched from _on_prediction. The latter are tracked
+        # as the concurrent.futures.Futures returned by run_coroutine_threadsafe,
+        # registered at dispatch time so none is missed (the inference thread is
+        # already joined above, so no new ones can appear).
+        flush_tasks = [
+            asyncio.create_task(self._handle_turn(ft))
+            for ft in self.aggregator.flush(self.ring.total_seconds)
+        ]
+        in_flight = list(self._asr_futures)
+
+        async def _await_in_flight() -> None:
+            if in_flight:
+                await loop.run_in_executor(
+                    None,
+                    lambda: concurrent.futures.wait(
+                        in_flight, timeout=settings.asr_timeout + 5
+                    ),
+                )
+
+        if flush_tasks or in_flight:
+            await asyncio.gather(
+                *flush_tasks, _await_in_flight(), return_exceptions=True
             )
 
         prediction = self.accumulator.get_prediction()
@@ -356,40 +373,35 @@ class DiarizationSession:
             for ft in self.aggregator.feed(
                 speaker, turn.start, turn.start + turn.duration, now
             ):
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     self._handle_turn(ft), self.loop
                 )
+                self._asr_futures.add(fut)
+                fut.add_done_callback(self._asr_futures.discard)
 
     async def _handle_turn(self, ft) -> None:
         """Process a finalized turn: run ASR and emit a TranscriptMessage."""
         if self.asr_client is None or self._asr_sem is None:
             return
-        task = asyncio.current_task()
-        if task is not None:
-            self._asr_tasks.add(task)
-        try:
-            async with self._asr_sem:
-                pcm = self.ring.slice(ft.start, ft.end)
-                if pcm is None or pcm.size < 16000 // 4:  # < 0.25s -> too short for ASR
-                    return
-                name, score = self._last_match.get(ft.speaker, (None, None))
-                try:
-                    lang, text = await self.asr_client.transcribe(pcm)
-                except Exception:  # noqa: BLE001
-                    lang, text = "", "[ASR失败]"
-                msg = TranscriptMessage(
-                    speaker=ft.speaker,
-                    name=name,
-                    score=score,
-                    start=ft.start,
-                    end=ft.end,
-                    text=text,
-                    lang=lang,
-                ).model_dump()
-                await self.on_message(msg)
-        finally:
-            if task is not None:
-                self._asr_tasks.discard(task)
+        async with self._asr_sem:
+            pcm = self.ring.slice(ft.start, ft.end)
+            if pcm is None or pcm.size < 16000 // 4:  # < 0.25s -> too short for ASR
+                return
+            name, score = self._last_match.get(ft.speaker, (None, None))
+            try:
+                lang, text = await self.asr_client.transcribe(pcm)
+            except Exception:  # noqa: BLE001
+                lang, text = "", "[ASR失败]"
+            msg = TranscriptMessage(
+                speaker=ft.speaker,
+                name=name,
+                score=score,
+                start=ft.start,
+                end=ft.end,
+                text=text,
+                lang=lang,
+            ).model_dump()
+            await self.on_message(msg)
 
     def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
         """Return the L2-normalized running centroid for the given speaker.
