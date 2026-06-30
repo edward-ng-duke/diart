@@ -38,12 +38,16 @@ from diart_server import metrics
 from diart_server.config import settings
 from diart_server.meeting_audio_source import MeetingAudioSource
 from diart_server.models_registry import ModelsRegistry
+from diart_server.pcm_ring_buffer import PcmRingBuffer
 from diart_server.protocol import (
     FinalMessage,
     PredictionMessage,
     QueryParams,
     ReadyMessage,
+    TranscriptMessage,
 )
+from diart_server.turn_aggregator import TurnAggregator
+from diart_server.voiceprint_matcher import match as vp_match
 
 
 class DiarizationSession:
@@ -76,6 +80,8 @@ class DiarizationSession:
         registry: ModelsRegistry,
         on_message: Callable[[dict], Awaitable[None]],
         loop: asyncio.AbstractEventLoop,
+        store=None,
+        asr_client=None,
     ) -> None:
         # T22 will route ``vad`` through a different pipeline. Until
         # then, refuse the request rather than silently treating it as
@@ -152,6 +158,19 @@ class DiarizationSession:
         # tracking would require a per-frame timestamp queue.
         self._last_push_at: Optional[float] = None
 
+        # T11: voiceprint matching, turn aggregation, async ASR
+        self.store = store
+        self.asr_client = asr_client
+        self.ring: PcmRingBuffer = PcmRingBuffer(
+            settings.ring_buffer_seconds, sample_rate=16000
+        )
+        self.aggregator: TurnAggregator = TurnAggregator(
+            settings.silence_gap, settings.max_turn_seconds
+        )
+        self._last_match: dict[str, tuple] = {}
+        self._asr_sem: Optional[asyncio.Semaphore] = None
+        self._asr_tasks: set = set()
+
     # ------------------------------------------------------------------
     # Outbound payloads
     # ------------------------------------------------------------------
@@ -199,6 +218,7 @@ class DiarizationSession:
         self._thread.start()
         metrics.active_sessions.inc()
         self._started_at = time.monotonic()
+        self._asr_sem = asyncio.Semaphore(settings.max_asr_concurrency)
 
     def push_pcm(self, pcm: np.ndarray) -> None:
         """Forward a decoded PCM frame to the audio source.
@@ -209,6 +229,7 @@ class DiarizationSession:
         end-to-end latency histogram (T28).
         """
         self.source.push_pcm(pcm)
+        self.ring.append(pcm)
         metrics.audio_bytes_received.inc(pcm.nbytes)
         self._last_push_at = time.monotonic()
 
@@ -231,6 +252,15 @@ class DiarizationSession:
             metrics.active_sessions.dec()
             metrics.session_duration.observe(time.monotonic() - self._started_at)
             self._started_at = None  # idempotent close
+
+        # Flush any still-open turns into the ASR pipeline and wait for
+        # all pending ASR tasks to complete before building the summary.
+        for ft in self.aggregator.flush(self.ring.total_seconds):
+            self._asr_tasks.add(asyncio.ensure_future(self._handle_turn(ft)))
+        if self._asr_tasks:
+            await asyncio.wait(
+                self._asr_tasks, timeout=settings.asr_timeout + 5
+            )
 
         prediction = self.accumulator.get_prediction()
         if prediction is not None and len(prediction.labels()) > 0:
@@ -301,6 +331,11 @@ class DiarizationSession:
         for turn, _, speaker in annotation.itertracks(yield_label=True):
             self._speaker_counts[speaker] += 1
             embedding = self._extract_embedding(speaker)
+            name, score = None, None
+            if self.store is not None and embedding is not None:
+                refs = self.store.vectors(self.params.embedding_model)
+                name, score = vp_match(embedding, refs, settings.match_threshold)
+                self._last_match[speaker] = (name, score)
             msg = PredictionMessage(
                 type="prediction",
                 start=turn.start,
@@ -308,12 +343,53 @@ class DiarizationSession:
                 speaker=speaker,
                 embedding=embedding.tolist() if embedding is not None else [],
                 samples_count=self._speaker_counts[speaker],
+                name=name,
+                score=score,
             ).model_dump()
             asyncio.run_coroutine_threadsafe(self.on_message(msg), self.loop)
             metrics.predictions_total.labels(
                 pipeline=self.params.pipeline,
                 model=self.params.embedding_model,
             ).inc()
+            # Aggregate speaker turn and dispatch ASR for any finalized turns
+            now = self.ring.total_seconds
+            for ft in self.aggregator.feed(
+                speaker, turn.start, turn.start + turn.duration, now
+            ):
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_turn(ft), self.loop
+                )
+
+    async def _handle_turn(self, ft) -> None:
+        """Process a finalized turn: run ASR and emit a TranscriptMessage."""
+        if self.asr_client is None or self._asr_sem is None:
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._asr_tasks.add(task)
+        try:
+            async with self._asr_sem:
+                pcm = self.ring.slice(ft.start, ft.end)
+                if pcm is None or pcm.size < 160:  # <10ms -> skip (quality gate)
+                    return
+                name, score = self._last_match.get(ft.speaker, (None, None))
+                try:
+                    lang, text = await self.asr_client.transcribe(pcm)
+                except Exception:  # noqa: BLE001
+                    lang, text = "", "[ASR失败]"
+                msg = TranscriptMessage(
+                    speaker=ft.speaker,
+                    name=name,
+                    score=score,
+                    start=ft.start,
+                    end=ft.end,
+                    text=text,
+                    lang=lang,
+                ).model_dump()
+                await self.on_message(msg)
+        finally:
+            if task is not None:
+                self._asr_tasks.discard(task)
 
     def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
         """Return the L2-normalized running centroid for the given speaker.

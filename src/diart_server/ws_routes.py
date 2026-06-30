@@ -129,6 +129,8 @@ async def stream(websocket: WebSocket) -> None:
             registry=websocket.app.state.registry,
             on_message=websocket.send_json,
             loop=asyncio.get_running_loop(),
+            store=getattr(websocket.app.state, "store", None),
+            asr_client=getattr(websocket.app.state, "asr_client", None),
         )
     except NotImplementedError as exc:
         metrics.session_errors_total.labels(code="BAD_AUDIO").inc()
