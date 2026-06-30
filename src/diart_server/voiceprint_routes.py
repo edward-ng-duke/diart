@@ -1,6 +1,7 @@
 """HTTP endpoints for enrolling/listing/removing voiceprints."""
 from __future__ import annotations
 
+import asyncio
 import io
 import wave
 
@@ -70,8 +71,18 @@ async def enroll(
         raise HTTPException(status_code=400, detail="clip too short (need >=0.5s)")
 
     registry = getattr(request.app.state, "registry", None)
-    embedder = make_embedder(embedding_model, registry)
-    vec = extract(pcm, embedder)
+    loop = asyncio.get_running_loop()
+    try:
+        # Offload the blocking model load + forward pass off the event loop
+        # so a slow/failed enrollment cannot stall live WebSocket sessions.
+        vec = await loop.run_in_executor(
+            None, lambda: extract(pcm, make_embedder(embedding_model, registry))
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=f"embedding model {embedding_model!r} could not be used: {exc}",
+        )
     store = request.app.state.store
     store.enroll(embedding_model, name, vec)
     n = next((i["n_clips"] for i in store.list(embedding_model) if i["name"] == name), 1)

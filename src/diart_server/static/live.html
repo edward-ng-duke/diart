@@ -41,7 +41,10 @@ async function loadModels(){
     const o=document.createElement('option'); o.value=name; o.textContent=name;
     (kind==='embedding'?emb:seg).appendChild(o);
   }
-  emb.value = [...emb.options].find(o=>o.value.includes('ecapa'))?.value || emb.value;
+  const embOpts = [...emb.options].map(o=>o.value);
+  emb.value = embOpts.find(v=>v==='pyannote/wespeaker-voxceleb-resnet34-LM')
+           || embOpts.find(v=>v==='pyannote/embedding')
+           || emb.value;
   seg.value = [...seg.options].find(o=>o.value.includes('segmentation-3.0'))?.value || seg.value;
 }
 

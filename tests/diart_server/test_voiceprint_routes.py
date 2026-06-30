@@ -46,3 +46,26 @@ def test_enroll_list_delete(monkeypatch, tmp_path):
     r = client.delete("/v1/voiceprints/张三", params={"embedding_model": "speechbrain/ecapa"})
     assert r.status_code == 200
     assert client.get("/v1/voiceprints", params={"embedding_model": "speechbrain/ecapa"}).json()["voiceprints"] == []
+
+
+def test_enroll_model_load_failure_returns_400(monkeypatch, tmp_path):
+    import diart_server.voiceprint_routes as vr
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot load model")
+
+    monkeypatch.setattr(vr, "make_embedder", boom)
+
+    from diart_server.voiceprint_store import VoiceprintStore
+    from diart_server.app import create_app
+
+    app = create_app()
+    app.state.store = VoiceprintStore(tmp_path)
+    client = TestClient(app)
+    r = client.post(
+        "/v1/voiceprints",
+        data={"name": "x", "embedding_model": "speechbrain/spkrec-ecapa-voxceleb"},
+        files={"file": ("a.wav", _wav_bytes(), "audio/wav")},
+    )
+    assert r.status_code == 400
+    assert "could not be used" in r.json()["detail"]
