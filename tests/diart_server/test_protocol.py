@@ -54,8 +54,10 @@ def test_prediction_message_roundtrip():
     }
     msg = PredictionMessage.model_validate(payload)
     dumped = msg.model_dump()
-    assert dumped == payload
-    assert json.loads(msg.model_dump_json()) == payload
+    # name/score are optional fields added in Task 3; they default to None
+    expected = {**payload, "name": None, "score": None}
+    assert dumped == expected
+    assert json.loads(msg.model_dump_json()) == expected
 
 
 def test_final_message_roundtrip():

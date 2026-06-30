@@ -51,6 +51,8 @@ class PredictionMessage(BaseModel):
     duration: float
     speaker: str
     embedding: list[float]
+    name: str | None = None
+    score: float | None = None
     samples_count: int
 
 
@@ -88,6 +90,35 @@ class EndControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["end"] = "end"
+
+
+class TranscriptMessage(BaseModel):
+    """Per-utterance ASR result, sent when a speaker turn is finalized."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["transcript"] = "transcript"
+    speaker: str
+    name: str | None = None
+    score: float | None = None
+    start: float
+    end: float
+    text: str
+    lang: str = ""
+
+
+class VoiceprintInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    n_clips: int
+
+
+class EnrollResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["enrolled"] = "enrolled"
+    name: str
+    embedding_model: str
+    n_clips: int
 
 
 # ---------------------------------------------------------------------------
@@ -137,4 +168,7 @@ __all__ = [
     "EndControl",
     "QueryParams",
     "parse_query",
+    "TranscriptMessage",
+    "VoiceprintInfo",
+    "EnrollResponse",
 ]
