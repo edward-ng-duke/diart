@@ -16,7 +16,7 @@ from pathlib import Path
 
 import torch
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from diart_server.asr_client import AsrClient
@@ -124,6 +124,15 @@ def create_app() -> FastAPI:
     application.include_router(probes_router)
     application.include_router(ws_router)
     application.include_router(voiceprint_router)
+
+    # /demo/live must be registered BEFORE the /demo StaticFiles mount so the
+    # mount does not shadow it.
+    _live_html = _STATIC_DIR / "live.html"
+
+    @application.get("/demo/live", response_class=HTMLResponse, include_in_schema=False)
+    async def demo_live() -> str:
+        """Serve the real-time mic + voiceprint + ASR demo page."""
+        return _live_html.read_text(encoding="utf-8")
 
     # Browser-side demo: upload a file → stream to /v1/diarize/stream → render
     # timeline + segments. Served from /demo/ (static SPA, single index.html).

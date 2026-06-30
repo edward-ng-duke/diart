@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head><meta charset="UTF-8"><title>Diart · 实时声纹 + ASR</title>
+<style>
+ body{font:14px/1.5 system-ui;margin:0;background:#0b0d10;color:#e6e8eb}
+ .wrap{max-width:900px;margin:0 auto;padding:20px}
+ button{background:#6366f1;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer}
+ button:disabled{opacity:.5}
+ select,input{background:#1a1e25;color:#e6e8eb;border:1px solid #262b33;border-radius:6px;padding:6px}
+ .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
+ .line{padding:6px 10px;border-left:3px solid #6366f1;margin:4px 0;background:#14171c;border-radius:4px}
+ .name{color:#10b981;font-weight:600} .unk{color:#8b929c} .t{color:#8b929c;font-size:12px}
+</style></head>
+<body><div class="wrap">
+ <h2>实时声纹 + ASR</h2>
+ <div class="row">
+   embedding: <select id="emb"></select>
+   segmentation: <select id="seg"></select>
+ </div>
+ <div class="row">
+   <input id="enrollName" placeholder="注册姓名">
+   <button id="enrollBtn">录 4 秒并注册</button>
+   <span id="enrollStatus" class="t"></span>
+ </div>
+ <div class="row">
+   <button id="startBtn">开始</button>
+   <button id="stopBtn" disabled>停止</button>
+   <span id="status" class="t">idle</span>
+ </div>
+ <div id="timeline"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+let ws, audioCtx, node, stream, running=false;
+
+async function loadModels(){
+  const info = await (await fetch('/v1/info')).json();
+  const emb=$('#emb'), seg=$('#seg');
+  for(const [name,kind] of Object.entries(info.models)){
+    if(name.includes('titanet')) continue; // hidden: needs nemo
+    const o=document.createElement('option'); o.value=name; o.textContent=name;
+    (kind==='embedding'?emb:seg).appendChild(o);
+  }
+  emb.value = [...emb.options].find(o=>o.value.includes('ecapa'))?.value || emb.value;
+  seg.value = [...seg.options].find(o=>o.value.includes('segmentation-3.0'))?.value || seg.value;
+}
+
+function downsampleSend(buf, inRate){
+  // send float32 LE mono at native rate; server resamples to 16k
+  if(ws && ws.readyState===1) ws.send(buf.buffer);
+}
+
+async function capture(onFrame){
+  stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
+  audioCtx = new AudioContext();
+  const src = audioCtx.createMediaStreamSource(stream);
+  const proc = audioCtx.createScriptProcessor(8192,1,1); // ~0.18s @48k
+  proc.onaudioprocess = e => onFrame(new Float32Array(e.inputBuffer.getChannelData(0)));
+  src.connect(proc); proc.connect(audioCtx.destination);
+  node = proc;
+  return audioCtx.sampleRate;
+}
+
+function addLine(m){
+  const div=document.createElement('div'); div.className='line';
+  const who = m.name ? `<span class="name">${m.name}</span>` : `<span class="unk">${m.speaker}</span>`;
+  const sc = (m.score!=null)?` (${m.score.toFixed(2)})`:'';
+  div.innerHTML = `<span class="t">${m.start.toFixed(1)}–${m.end.toFixed(1)}s</span> ${who}${sc}: ${m.text}`;
+  $('#timeline').prepend(div);
+}
+
+$('#startBtn').onclick = async ()=>{
+  $('#startBtn').disabled=true; $('#stopBtn').disabled=false; running=true;
+  const sr0 = await capture(f=>downsampleSend(f, audioCtx.sampleRate));
+  const q = new URLSearchParams({sample_rate:String(sr0), embedding_model:$('#emb').value, segmentation_model:$('#seg').value});
+  ws = new WebSocket(`ws://${location.host}/v1/diarize/stream?${q}`);
+  ws.binaryType='arraybuffer';
+  ws.onmessage = ev=>{
+    const m=JSON.parse(ev.data);
+    if(m.type==='ready') $('#status').textContent='listening · '+m.session_id.slice(0,8);
+    else if(m.type==='transcript') addLine(m);
+    else if(m.type==='error') $('#status').textContent='error: '+m.message;
+  };
+};
+
+$('#stopBtn').onclick = ()=>{
+  running=false; $('#startBtn').disabled=false; $('#stopBtn').disabled=true;
+  if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'end'}));
+  if(node) node.disconnect(); if(audioCtx) audioCtx.close();
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  $('#status').textContent='stopped';
+};
+
+$('#enrollBtn').onclick = async ()=>{
+  const name=$('#enrollName').value.trim(); if(!name){$('#enrollStatus').textContent='填姓名';return;}
+  $('#enrollStatus').textContent='录音中…';
+  const s = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
+  const rec = new MediaRecorder(s); const chunks=[];
+  rec.ondataavailable=e=>chunks.push(e.data);
+  rec.onstop = async ()=>{
+    s.getTracks().forEach(t=>t.stop());
+    // decode webm -> 16k mono wav via OfflineAudioContext
+    const buf = await new Blob(chunks).arrayBuffer();
+    const ac = new AudioContext(); const decoded = await ac.decodeAudioData(buf); ac.close();
+    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration*16000), 16000);
+    const bs = off.createBufferSource(); bs.buffer=decoded; bs.connect(off.destination); bs.start();
+    const rendered = await off.startRendering();
+    const wav = encodeWav(rendered.getChannelData(0), 16000);
+    const fd = new FormData();
+    fd.append('name', name); fd.append('embedding_model', $('#emb').value);
+    fd.append('file', new Blob([wav],{type:'audio/wav'}), 'enroll.wav');
+    const r = await fetch('/v1/voiceprints', {method:'POST', body:fd});
+    $('#enrollStatus').textContent = r.ok ? ('已注册 '+name) : ('注册失败 '+r.status);
+  };
+  rec.start(); setTimeout(()=>rec.stop(), 4000);
+};
+
+function encodeWav(f32, sr){
+  const buf=new ArrayBuffer(44+f32.length*2), v=new DataView(buf);
+  const w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i))};
+  w(0,'RIFF'); v.setUint32(4,36+f32.length*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,sr,true); v.setUint32(28,sr*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  w(36,'data'); v.setUint32(40,f32.length*2,true);
+  let o=44; for(let i=0;i<f32.length;i++,o+=2){const s=Math.max(-1,Math.min(1,f32[i]));v.setInt16(o,s*0x7fff,true);}
+  return buf;
+}
+
+loadModels();
+</script>
+</body></html>
