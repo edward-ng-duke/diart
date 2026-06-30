@@ -76,7 +76,8 @@ $('#startBtn').onclick = async ()=>{
   $('#startBtn').disabled=true; $('#stopBtn').disabled=false; running=true;
   const sr0 = await capture(f=>downsampleSend(f, audioCtx.sampleRate));
   const q = new URLSearchParams({sample_rate:String(sr0), embedding_model:$('#emb').value, segmentation_model:$('#seg').value});
-  ws = new WebSocket(`ws://${location.host}/v1/diarize/stream?${q}`);
+  const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${wsScheme}://${location.host}/v1/diarize/stream?${q}`);
   ws.binaryType='arraybuffer';
   ws.onmessage = ev=>{
     const m=JSON.parse(ev.data);
