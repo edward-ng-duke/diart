@@ -1,161 +1,128 @@
-"""Integration test: per-turn ASR → TranscriptMessage emission.
+"""Deterministic test: a finalized turn runs ASR and emits a TranscriptMessage.
 
-Mirrors test_session.py's setup (dummy models, background loop, synthetic PCM)
-but also wires in a monkeypatched AsrClient so no network is needed, and
-asserts that at least one ``transcript`` message with the expected text is
-emitted after ``close()``.
+Drives ``DiarizationSession._handle_turn`` directly with a populated ring
+buffer and a monkeypatched ``AsrClient``, so it exercises the real 0.25s ASR
+quality gate without depending on the dummy diarization model's (short,
+unstable) turn lengths.
 """
-
 from __future__ import annotations
 
 import asyncio
 import sys
 import threading
-import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-# Make tests/conftest.py importable so the dummy model classes are available.
 TESTS_DIR = Path(__file__).resolve().parent.parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
 from conftest import DummyEmbeddingModel, DummySegmentationModel  # noqa: E402
-
 from diart.models import EmbeddingModel, SegmentationModel  # noqa: E402
 
 from diart_server.asr_client import AsrClient  # noqa: E402
 from diart_server.protocol import QueryParams  # noqa: E402
 from diart_server.session import DiarizationSession  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Helpers (mirrored from test_session.py)
-# ---------------------------------------------------------------------------
+from diart_server.turn_aggregator import FinalizedTurn  # noqa: E402
 
 
 class FakeRegistry:
-    """Minimal registry stub for DiarizationSession."""
+    def __init__(self, seg, emb):
+        self._seg, self._emb = seg, emb
 
-    def __init__(self, seg: SegmentationModel, emb: EmbeddingModel) -> None:
-        self._seg = seg
-        self._emb = emb
-
-    def get_segmentation(self, name: str) -> SegmentationModel:  # noqa: ARG002
+    def get_segmentation(self, name):  # noqa: ARG002
         return self._seg
 
-    def get_embedding(self, name: str) -> EmbeddingModel:  # noqa: ARG002
+    def get_embedding(self, name):  # noqa: ARG002
         return self._emb
 
 
-def _build_dummy_models() -> tuple[SegmentationModel, EmbeddingModel]:
-    return (
-        SegmentationModel(DummySegmentationModel),
-        EmbeddingModel(DummyEmbeddingModel),
+def _build_dummy_models():
+    return SegmentationModel(DummySegmentationModel), EmbeddingModel(DummyEmbeddingModel)
+
+
+def _make_session(loop, on_message):
+    seg, emb = _build_dummy_models()
+    params = QueryParams(
+        sample_rate=16000, pipeline="diarization",
+        segmentation_model="dummy/seg", embedding_model="dummy/emb",
+    )
+    return DiarizationSession(
+        params=params, registry=FakeRegistry(seg, emb), on_message=on_message,
+        loop=loop, store=None, asr_client=AsrClient("http://x/v1", "m", "EMPTY", 5.0),
     )
 
 
-# ---------------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------------
+def _run_handle_turn(session, ft, loop):
+    fut = asyncio.run_coroutine_threadsafe(session._handle_turn(ft), loop)
+    fut.result(timeout=10.0)
 
 
-def test_finalized_turn_emits_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
-    """After close(), at least one transcript message with the patched text is received."""
-
-    # Monkeypatch ASR so no network call is made.
-    async def fake_transcribe(self, pcm, language=None):  # noqa: ANN001
+def test_handle_turn_emits_transcript(monkeypatch):
+    async def fake_transcribe(self, pcm, language=None):  # noqa: ANN001, ARG001
         return ("Chinese", "你好世界")
 
     monkeypatch.setattr(AsrClient, "transcribe", fake_transcribe)
 
-    seg, emb = _build_dummy_models()
-    registry = FakeRegistry(seg, emb)
-
-    # Background asyncio loop — same pattern as test_session.py.
     loop = asyncio.new_event_loop()
-    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
-    loop_thread.start()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    messages, lock = [], threading.Lock()
 
-    messages: list[dict] = []
-    messages_lock = threading.Lock()
-
-    async def on_message(msg: dict) -> None:
-        with messages_lock:
+    async def on_message(msg):
+        with lock:
             messages.append(msg)
 
-    params = QueryParams(
-        sample_rate=16000,
-        pipeline="diarization",
-        segmentation_model="dummy/seg",
-        embedding_model="dummy/emb",
-    )
-
-    asr_client = AsrClient("http://x/v1", "m", "EMPTY", 5.0)
-
-    session = DiarizationSession(
-        params=params,
-        registry=registry,  # type: ignore[arg-type]
-        on_message=on_message,
-        loop=loop,
-        store=None,
-        asr_client=asr_client,
-    )
-
+    session = _make_session(loop, on_message)
     try:
-        session.start()
-
-        # Push synthetic PCM: same pacing as test_session.py.
-        rng = np.random.default_rng(seed=42)
-        frame_samples = 8000  # 0.5s @ 16kHz
-
-        # First 6 frames × 0.5s pacing → fills the 5s diart window.
-        for _ in range(6):
-            pcm = rng.standard_normal(frame_samples).astype(np.float32) * 0.1
-            session.push_pcm(pcm)
-            time.sleep(0.5)
-
-        # Extra frames to generate predictions (step=0.5s).
-        for _ in range(8):
-            pcm = rng.standard_normal(frame_samples).astype(np.float32) * 0.1
-            session.push_pcm(pcm)
-            time.sleep(0.2)
-
-        # Allow inference to drain.
-        time.sleep(2.0)
-
-        # close() flushes remaining turns and waits for pending ASR.
-        future = asyncio.run_coroutine_threadsafe(session.close(), loop)
-        final = future.result(timeout=30.0)
+        session._asr_sem = asyncio.Semaphore(2)            # what start() sets
+        session.ring.append(np.full(16000, 0.05, dtype=np.float32))  # 1.0s available
+        _run_handle_turn(session, FinalizedTurn("speaker0", 0.0, 1.0), loop)  # 1.0s > 0.25s
     finally:
         loop.call_soon_threadsafe(loop.stop)
-        loop_thread.join(timeout=2.0)
+        t.join(timeout=2.0)
         loop.close()
 
-    # final summary must be well-formed.
-    assert isinstance(final, dict)
-    assert final.get("type") == "final"
+    with lock:
+        transcripts = [m for m in messages if m.get("type") == "transcript"]
+    assert len(transcripts) == 1, [m.get("type") for m in messages]
+    tr = transcripts[0]
+    assert tr["text"] == "你好世界"
+    assert tr["lang"] == "Chinese"
+    assert tr["speaker"] == "speaker0"
+    assert tr["start"] == 0.0 and tr["end"] == 1.0
 
-    with messages_lock:
-        snapshot = list(messages)
 
-    types = [m.get("type") for m in snapshot]
+def test_handle_turn_skips_below_gate(monkeypatch):
+    calls = []
 
-    # At least one prediction must have been emitted (sanity check that PCM
-    # was actually processed before asserting transcript).
-    prediction_msgs = [m for m in snapshot if m.get("type") == "prediction"]
-    assert len(prediction_msgs) >= 1, (
-        f"no prediction messages received; types={types!r}"
-    )
+    async def fake_transcribe(self, pcm, language=None):  # noqa: ANN001, ARG001
+        calls.append(1)
+        return ("Chinese", "x")
 
-    # The key assertion: at least one transcript message.
-    transcript_msgs = [m for m in snapshot if m.get("type") == "transcript"]
-    assert len(transcript_msgs) >= 1, (
-        f"no transcript messages received; types={types!r}"
-    )
+    monkeypatch.setattr(AsrClient, "transcribe", fake_transcribe)
 
-    t = transcript_msgs[0]
-    assert t["text"] == "你好世界", f"unexpected text: {t['text']!r}"
-    assert t["lang"] == "Chinese", f"unexpected lang: {t['lang']!r}"
+    loop = asyncio.new_event_loop()
+    t = threading.Thread(target=loop.run_forever, daemon=True)
+    t.start()
+    messages, lock = [], threading.Lock()
+
+    async def on_message(msg):
+        with lock:
+            messages.append(msg)
+
+    session = _make_session(loop, on_message)
+    try:
+        session._asr_sem = asyncio.Semaphore(2)
+        session.ring.append(np.full(16000, 0.05, dtype=np.float32))  # 1.0s available
+        _run_handle_turn(session, FinalizedTurn("speaker0", 0.0, 0.1), loop)  # 0.1s < 0.25s
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        t.join(timeout=2.0)
+        loop.close()
+
+    assert calls == [], "ASR must be skipped for sub-0.25s turns"
+    with lock:
+        assert not any(m.get("type") == "transcript" for m in messages)

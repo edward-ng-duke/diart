@@ -370,7 +370,7 @@ class DiarizationSession:
         try:
             async with self._asr_sem:
                 pcm = self.ring.slice(ft.start, ft.end)
-                if pcm is None or pcm.size < 160:  # <10ms -> skip (quality gate)
+                if pcm is None or pcm.size < 16000 // 4:  # < 0.25s -> too short for ASR
                     return
                 name, score = self._last_match.get(ft.speaker, (None, None))
                 try:
