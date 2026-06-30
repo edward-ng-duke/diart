@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import threading
 import time
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
@@ -49,6 +51,42 @@ from diart_server.protocol import (
 )
 from diart_server.turn_aggregator import TurnAggregator
 from diart_server.voiceprint_matcher import match as vp_match
+
+logger = logging.getLogger(__name__)
+
+# Directory holding per-embedding-model cohort/impostor means used to
+# mean-center voiceprint embeddings before cosine matching (see
+# scripts/compute_cohort_mean.py and
+# docs/bugs/2026-06-30-voiceprint-score-compression.md).
+_COHORT_DIR = Path(__file__).resolve().parents[2] / "assets" / "cohort"
+
+
+def _cohort_slug(model_name: str) -> str:
+    """Map an embedding-model name to its cohort-mean filename slug.
+
+    Must stay consistent with ``scripts/compute_cohort_mean.py:model_slug``.
+    """
+    return model_name.replace("/", "__")
+
+
+def _load_cohort_mean(model_name: str) -> Optional[np.ndarray]:
+    """Load the cohort/impostor mean for ``model_name``, or ``None`` if absent.
+
+    Missing or unreadable cohort files are non-fatal: the matcher falls back to
+    raw cosine behaviour when the mean is ``None``.
+    """
+    path = _COHORT_DIR / f"{_cohort_slug(model_name)}.npy"
+    if not path.exists():
+        logger.info("no cohort mean for %s at %s; using raw cosine", model_name, path)
+        return None
+    try:
+        mean = np.load(path).astype(np.float32).reshape(-1)
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to load cohort mean %s; using raw cosine", path)
+        return None
+    if mean.size == 0:
+        return None
+    return mean
 
 
 class DiarizationSession:
@@ -162,6 +200,13 @@ class DiarizationSession:
         # T11: voiceprint matching, turn aggregation, async ASR
         self.store = store
         self.asr_client = asr_client
+        # Cohort/impostor mean for this embedding model, loaded once. When
+        # present, voiceprint matching mean-centers embeddings before cosine to
+        # remove the shared non-discriminative direction (score-compression fix).
+        # ``None`` -> raw-cosine fallback (no crash if the asset is missing).
+        self.cohort_mean: Optional[np.ndarray] = _load_cohort_mean(
+            params.embedding_model
+        )
         self.ring: PcmRingBuffer = PcmRingBuffer(
             settings.ring_buffer_seconds, sample_rate=16000
         )
@@ -351,7 +396,12 @@ class DiarizationSession:
             name, score = None, None
             if self.store is not None and embedding is not None:
                 refs = self.store.vectors(self.params.embedding_model)
-                name, score = vp_match(embedding, refs, settings.match_threshold)
+                name, score = vp_match(
+                    embedding,
+                    refs,
+                    settings.match_threshold,
+                    mean_embedding=self.cohort_mean,
+                )
                 self._last_match[speaker] = (name, score)
             msg = PredictionMessage(
                 type="prediction",

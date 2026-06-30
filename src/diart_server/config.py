@@ -42,8 +42,15 @@ class Settings(BaseSettings):
     )
     asr_api_key: str = Field(default="EMPTY", validation_alias="DIART_ASR_API_KEY")
     asr_timeout: float = Field(default=60, validation_alias="DIART_ASR_TIMEOUT")
+    # Tuned for the mean-centered + remapped [0,1] voiceprint score (see
+    # docs/bugs/2026-06-30-voiceprint-score-compression.md). Measured on the
+    # real embed->match chain (data/2news.mp3 clips A1/A2 same, B different):
+    #   wespeaker:        same=0.753 diff=0.462
+    #   pyannote/embedding: same=0.712 diff=0.563
+    # 0.60 sits above both different-speaker scores and below both
+    # same-speaker scores, separating them for both working embedding models.
     match_threshold: float = Field(
-        default=0.5, validation_alias="DIART_MATCH_THRESHOLD"
+        default=0.6, validation_alias="DIART_MATCH_THRESHOLD"
     )
     silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
     max_turn_seconds: float = Field(
