@@ -19,9 +19,12 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from diart_server.asr_client import AsrClient
 from diart_server.config import settings
 from diart_server.models_registry import ModelsRegistry
 from diart_server.session_manager import manager
+from diart_server.voiceprint_routes import voiceprint_router
+from diart_server.voiceprint_store import VoiceprintStore
 from diart_server.ws_routes import probes_router, ws_router
 
 logger = logging.getLogger(__name__)
@@ -93,26 +96,52 @@ async def lifespan(app: FastAPI):
         logger.exception("warm-up failed; app will report not ready")
         app.state.ready = False
 
+    # Always wire store + ASR client regardless of warm-up success.
+    store = VoiceprintStore(settings.voiceprints_dir)
+    store.load()
+    app.state.store = store
+    app.state.asr_client = AsrClient(
+        settings.asr_base_url, settings.asr_model, settings.asr_api_key, settings.asr_timeout
+    )
+
     yield
 
     logger.info("diart_server shutting down; draining active sessions")
     await manager.close_all(timeout=10.0)
 
 
-app = FastAPI(title="diart-server", version="0.1.0", lifespan=lifespan)
-app.include_router(probes_router)
-app.include_router(ws_router)
-
-# Browser-side demo: upload a file → stream to /v1/diarize/stream → render
-# timeline + segments. Served from /demo/ (static SPA, single index.html).
-# The package's static dir is shipped via setup.cfg's package_data so it
-# works for both editable and installed (docker) layouts.
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
-    app.mount("/demo", StaticFiles(directory=str(_STATIC_DIR), html=True), name="demo")
 
 
-@app.get("/", include_in_schema=False)
-async def root() -> RedirectResponse:
-    """Redirect bare visits to the browser demo."""
-    return RedirectResponse(url="/demo/", status_code=307)
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    Returns a fully-wired app instance: routers included, static files
+    mounted, root redirect defined, and lifespan attached. Call this once;
+    the module-level ``app`` is the canonical singleton.
+    """
+    application = FastAPI(title="diart-server", version="0.1.0", lifespan=lifespan)
+    application.include_router(probes_router)
+    application.include_router(ws_router)
+    application.include_router(voiceprint_router)
+
+    # Browser-side demo: upload a file → stream to /v1/diarize/stream → render
+    # timeline + segments. Served from /demo/ (static SPA, single index.html).
+    # The package's static dir is shipped via setup.cfg's package_data so it
+    # works for both editable and installed (docker) layouts.
+    if _STATIC_DIR.is_dir():
+        application.mount(
+            "/demo",
+            StaticFiles(directory=str(_STATIC_DIR), html=True),
+            name="demo",
+        )
+
+    @application.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        """Redirect bare visits to the browser demo."""
+        return RedirectResponse(url="/demo/", status_code=307)
+
+    return application
+
+
+app = create_app()

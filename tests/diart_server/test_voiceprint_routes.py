@@ -1,0 +1,48 @@
+"""Tests for the voiceprint enrollment HTTP endpoints.
+
+Uses FastAPI TestClient (no lifespan) so no real models are needed.
+`make_embedder` and `extract` are monkeypatched at module scope so the
+router logic can be exercised without GPU / model files.
+"""
+import io
+import wave
+import numpy as np
+from fastapi.testclient import TestClient
+
+
+def _wav_bytes(seconds=1.0, sr=16000):
+    int16 = (np.zeros(int(seconds * sr))).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(int16.tobytes())
+    return buf.getvalue()
+
+
+def test_enroll_list_delete(monkeypatch, tmp_path):
+    # Patch the embedder so no real model is needed.
+    import diart_server.voiceprint_routes as vr
+
+    monkeypatch.setattr(vr, "make_embedder", lambda *a, **k: object())
+    monkeypatch.setattr(vr, "extract", lambda pcm, emb: np.array([1.0, 0.0], dtype=np.float32))
+
+    from diart_server.voiceprint_store import VoiceprintStore
+    from diart_server.app import create_app
+
+    app = create_app()
+    app.state.store = VoiceprintStore(tmp_path)
+    client = TestClient(app)
+
+    r = client.post(
+        "/v1/voiceprints",
+        data={"name": "张三", "embedding_model": "speechbrain/ecapa"},
+        files={"file": ("a.wav", _wav_bytes(), "audio/wav")},
+    )
+    assert r.status_code == 200 and r.json()["name"] == "张三"
+
+    r = client.get("/v1/voiceprints", params={"embedding_model": "speechbrain/ecapa"})
+    assert r.json()["voiceprints"] == [{"name": "张三", "n_clips": 1}]
+
+    r = client.delete("/v1/voiceprints/张三", params={"embedding_model": "speechbrain/ecapa"})
+    assert r.status_code == 200
+    assert client.get("/v1/voiceprints", params={"embedding_model": "speechbrain/ecapa"}).json()["voiceprints"] == []
