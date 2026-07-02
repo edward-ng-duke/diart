@@ -78,6 +78,9 @@ function addLine(m){
   // Existing line for this turn_id? Replace its content in place (partial->final).
   if(tid && turnLines.has(tid)){
     const div = turnLines.get(tid);
+    // Partial and final ASR for the same turn run as concurrent coroutines, so a
+    // stale partial can resolve after the final — never let it clobber a final line.
+    if(m.partial && !div.classList.contains('partial')) return;
     div.className = 'line' + (m.partial ? ' partial' : '');
     div.innerHTML = lineHTML(m);
     return;
