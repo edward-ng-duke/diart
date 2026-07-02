@@ -53,14 +53,36 @@ class Settings(BaseSettings):
         default=0.6, validation_alias="DIART_MATCH_THRESHOLD"
     )
     silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
+    # Lowered 20.0 -> 12.0 as defense-in-depth for BUG1 (long-monologue latency):
+    # even with partial ASR disabled, worst-case final transcript latency drops
+    # from ~20s to ~12s. See docs/bugs/2026-07-02-turn-asr-quality.md.
     max_turn_seconds: float = Field(
-        default=20.0, validation_alias="DIART_MAX_TURN_SECONDS"
+        default=12.0, validation_alias="DIART_MAX_TURN_SECONDS"
     )
     ring_buffer_seconds: float = Field(
         default=120.0, validation_alias="DIART_RING_BUFFER_SECONDS"
     )
     max_asr_concurrency: int = Field(
         default=2, validation_alias="DIART_MAX_ASR_CONCURRENCY"
+    )
+    # BUG1: run partial ASR on an open turn every this-many seconds of newly
+    # accumulated open-turn audio, emitting a dimmed partial transcript that the
+    # frontend later replaces with the finalized turn (keyed by turn_id). 0
+    # disables the feature entirely (feature flag).
+    partial_asr_interval: float = Field(
+        default=5.0, validation_alias="DIART_PARTIAL_ASR_INTERVAL"
+    )
+    # BUG2: overlap (multi-speaker) fraction of a turn above which the mixed
+    # audio is left INTACT and merely flagged (overlapped=True); at or below it
+    # the overlapped samples are excised (zeroed) before ASR.
+    overlap_max_ratio: float = Field(
+        default=0.5, validation_alias="DIART_OVERLAP_MAX_RATIO"
+    )
+    # BUG3: a sub-0.25s finalized fragment is absorbed into the previous
+    # same-speaker turn if that turn's end is within this many seconds of the
+    # fragment's start (instead of being silently dropped).
+    absorb_gap: float = Field(
+        default=1.0, validation_alias="DIART_ABSORB_GAP"
     )
 
 

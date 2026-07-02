@@ -105,6 +105,21 @@ class TranscriptMessage(BaseModel):
     end: float
     text: str
     lang: str = ""
+    # Additive fields (BUG1/BUG2). All optional with back-compat defaults so
+    # existing messages/tests stay valid under the extra="forbid" config.
+    #
+    # BUG1: a stable id shared by an open turn's partial transcripts and its
+    # final transcript. The frontend keys timeline entries by turn_id and
+    # REPLACES a partial with the final (empty -> legacy prepend behaviour).
+    turn_id: str = ""
+    # BUG1: True while this is a partial (in-progress) transcript of an open
+    # turn; the final transcript for the same turn_id carries partial=False.
+    partial: bool = False
+    # BUG2: True when the turn's audio is mostly multi-speaker (majority
+    # overlap left intact and flagged rather than excised).
+    overlapped: bool = False
+    # BUG2: fraction of the turn [start,end] that overlapped another speaker.
+    overlap_ratio: float = 0.0
 
 
 class VoiceprintInfo(BaseModel):
