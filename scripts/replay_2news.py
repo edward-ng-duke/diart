@@ -37,11 +37,13 @@ SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# Pin these after the first clean baseline run (see module docstring).
+# Pinned from the first clean baseline run on HEAD+fixes (DIART_DEVICE=cuda,
+# DIART_MODELS_DIR=.../models, real Qwen3-ASR). Short unambiguous fragments
+# from stable FINAL transcript lines; the guard fails if a fix regresses any.
 BASELINE_SUBSTRINGS: list[str] = [
-    # "TODO baseline line 1",
-    # "TODO baseline line 2",
-    # "TODO baseline line 3",
+    "山东持续提升医疗废物处置能力",
+    "生成二维码标签",
+    "所有医疗废物均得到及时安全处置",
 ]
 
 AUDIO = REPO / "data" / "2news.mp3"

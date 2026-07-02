@@ -23,6 +23,16 @@ def test_transcript_message_roundtrip():
     assert d["type"] == "transcript" and d["name"] == "张三"
 
 
+def test_transcript_message_additive_fields_default():
+    # Minimal construction still validates under extra="forbid" and the new
+    # additive fields default to back-compat values (BUG1/BUG2).
+    m = TranscriptMessage(speaker="s0", start=0, end=1, text="x")
+    assert m.turn_id == ""
+    assert m.partial is False
+    assert m.overlapped is False
+    assert m.overlap_ratio == 0.0
+
+
 def test_enroll_response_and_info():
     r = EnrollResponse(name="张三", embedding_model="speechbrain/ecapa", n_clips=2)
     assert r.type == "enrolled"
