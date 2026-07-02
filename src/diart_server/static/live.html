@@ -10,6 +10,8 @@
  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
  .line{padding:6px 10px;border-left:3px solid #6366f1;margin:4px 0;background:#14171c;border-radius:4px}
  .name{color:#10b981;font-weight:600} .unk{color:#8b929c} .t{color:#8b929c;font-size:12px}
+ .line.partial{opacity:.55;font-style:italic;border-left-color:#8b929c}
+ .badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:11px;background:#7c2d12;color:#fed7aa}
 </style></head>
 <body><div class="wrap">
  <h2>实时声纹 + ASR</h2>
@@ -64,12 +66,29 @@ async function capture(onFrame){
   return audioCtx.sampleRate;
 }
 
-function addLine(m){
-  const div=document.createElement('div'); div.className='line';
+const turnLines = new Map(); // turn_id -> <div> for partial->final replacement
+function lineHTML(m){
   const who = m.name ? `<span class="name">${m.name}</span>` : `<span class="unk">${m.speaker}</span>`;
   const sc = (m.score!=null)?` (${m.score.toFixed(2)})`:'';
-  div.innerHTML = `<span class="t">${m.start.toFixed(1)}–${m.end.toFixed(1)}s</span> ${who}${sc}: ${m.text}`;
+  const ov = m.overlapped ? ` <span class="badge">⑂重叠</span>` : '';
+  return `<span class="t">${m.start.toFixed(1)}–${m.end.toFixed(1)}s</span> ${who}${sc}: ${m.text}${ov}`;
+}
+function addLine(m){
+  const tid = m.turn_id || '';
+  // Existing line for this turn_id? Replace its content in place (partial->final).
+  if(tid && turnLines.has(tid)){
+    const div = turnLines.get(tid);
+    div.className = 'line' + (m.partial ? ' partial' : '');
+    div.innerHTML = lineHTML(m);
+    return;
+  }
+  const div=document.createElement('div');
+  div.className = 'line' + (m.partial ? ' partial' : '');
+  div.innerHTML = lineHTML(m);
   $('#timeline').prepend(div);
+  // Track any turn_id (partial or final) so later re-emits (partial->final, or
+  // BUG3 fragment absorption re-emitting a final) replace in place.
+  if(tid) turnLines.set(tid, div);
 }
 
 $('#startBtn').onclick = async ()=>{
