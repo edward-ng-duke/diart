@@ -49,7 +49,7 @@ from diart_server.protocol import (
     ReadyMessage,
     TranscriptMessage,
 )
-from diart_server.turn_aggregator import TurnAggregator
+from diart_server.turn_aggregator import FinalizedTurn, TurnAggregator
 from diart_server.voiceprint_matcher import match as vp_match
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,15 @@ class DiarizationSession:
         self._last_match: dict[str, tuple[Optional[str], Optional[float]]] = {}
         self._asr_sem: Optional[asyncio.Semaphore] = None
         self._asr_futures: set = set()
+        # BUG2: multi-speaker (overlap) intervals in diart's timeline, merged
+        # and pruned to the ring window. Written on the inference thread in
+        # _on_prediction, read on the asyncio loop in _handle_turn -> guarded.
+        self._overlap_intervals: list[tuple[float, float]] = []
+        self._overlap_lock: threading.Lock = threading.Lock()
+        # BUG3: last transcript-emitting finalized turn per speaker, so a
+        # sub-0.25s fragment can be absorbed into the adjacent same-speaker turn
+        # instead of being silently dropped. Only touched on the asyncio loop.
+        self._last_final: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Outbound payloads
@@ -423,20 +432,148 @@ class DiarizationSession:
             for ft in self.aggregator.feed(
                 speaker, turn.start, turn.start + turn.duration, now
             ):
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._handle_turn(ft), self.loop
-                )
-                self._asr_futures.add(fut)
-                fut.add_done_callback(self._asr_futures.discard)
+                self._dispatch_turn(ft, partial=False)
 
-    async def _handle_turn(self, ft) -> None:
-        """Process a finalized turn: run ASR and emit a TranscriptMessage."""
+        # BUG2: record multi-speaker (overlap) intervals for this emission so
+        # _handle_turn can excise/flag mixed audio. get_overlap() gives exactly
+        # the multi-speaker sub-intervals; no manual pairwise math needed.
+        try:
+            overlap_tl = annotation.get_overlap()
+        except Exception:  # noqa: BLE001
+            overlap_tl = None
+        if overlap_tl is not None:
+            new = [(float(seg.start), float(seg.end)) for seg in overlap_tl]
+            if new:
+                self._record_overlaps(new)
+
+        # BUG1: emit partial ASR for open turns every partial_asr_interval
+        # seconds of accumulated open-turn audio (0 disables the feature).
+        if settings.partial_asr_interval > 0:
+            for pt in self.aggregator.due_partials(settings.partial_asr_interval):
+                self._dispatch_turn(pt, partial=True)
+
+    def _dispatch_turn(self, ft, partial: bool = False) -> None:
+        """Dispatch ASR for a finalized/partial turn onto the asyncio loop."""
+        fut = asyncio.run_coroutine_threadsafe(
+            self._handle_turn(ft, partial=partial), self.loop
+        )
+        self._asr_futures.add(fut)
+        fut.add_done_callback(self._asr_futures.discard)
+
+    def _record_overlaps(self, new: list[tuple[float, float]]) -> None:
+        """Merge new overlap intervals, prune to the ring window, coalesce."""
+        window_start = self.ring.total_seconds - settings.ring_buffer_seconds
+        with self._overlap_lock:
+            merged = self._overlap_intervals + new
+            # Drop intervals fully aged out of the ring window.
+            merged = [iv for iv in merged if iv[1] >= window_start]
+            merged.sort()
+            coalesced: list[tuple[float, float]] = []
+            for s, e in merged:
+                if coalesced and s <= coalesced[-1][1]:
+                    prev_s, prev_e = coalesced[-1]
+                    coalesced[-1] = (prev_s, max(prev_e, e))
+                else:
+                    coalesced.append((s, e))
+            self._overlap_intervals = coalesced
+
+    def _apply_overlap(self, pcm: np.ndarray, ft) -> tuple[np.ndarray, bool, float]:
+        """Excise (minority) or flag (majority) overlapped audio before ASR.
+
+        Pure function of ``pcm`` (a fresh slice copy — safe to mutate) and the
+        currently-tracked overlap intervals. Returns ``(pcm, overlapped,
+        overlap_ratio)`` where ``overlap_ratio`` is the fraction of
+        ``[ft.start, ft.end]`` that overlapped another speaker:
+
+        - ratio <= overlap_max_ratio (minority): zero the overlapped samples in
+          the copied slice (keeps timestamps aligned); overlapped=False.
+        - ratio  > overlap_max_ratio (majority): leave audio INTACT (excising
+          would starve ASR); overlapped=True.
+        - ratio == 0: unchanged; overlapped=False.
+        """
+        duration = ft.end - ft.start
+        if duration <= 0:
+            return pcm, False, 0.0
+        with self._overlap_lock:
+            intervals = list(self._overlap_intervals)
+        # Intersect each tracked interval with [ft.start, ft.end].
+        subs: list[tuple[float, float]] = []
+        total = 0.0
+        for s, e in intervals:
+            lo = max(s, ft.start)
+            hi = min(e, ft.end)
+            if hi > lo:
+                subs.append((lo, hi))
+                total += hi - lo
+        ratio = total / duration
+        if ratio <= 0.0:
+            return pcm, False, 0.0
+        if ratio > settings.overlap_max_ratio:
+            # Majority overlap: leave intact, just flag.
+            return pcm, True, ratio
+        # Minority overlap: zero out the overlapped samples (relative offsets).
+        sr = self.ring.sample_rate
+        n = pcm.size
+        for lo, hi in subs:
+            i0 = max(0, int(round((lo - ft.start) * sr)))
+            i1 = min(n, int(round((hi - ft.start) * sr)))
+            if i1 > i0:
+                pcm[i0:i1] = 0.0
+        return pcm, False, ratio
+
+    async def _handle_turn(self, ft, partial: bool = False) -> None:
+        """Process a turn: run ASR and emit a TranscriptMessage.
+
+        ``partial=True`` emits an in-progress transcript for an OPEN turn
+        (BUG1); the finalized turn later re-emits with the same ``turn_id`` and
+        ``partial=False`` so the frontend replaces it. When a finalized turn's
+        slice is below the 0.25s ASR gate, it is absorbed into the previous
+        adjacent same-speaker turn instead of being dropped (BUG3).
+        """
         if self.asr_client is None or self._asr_sem is None:
             return
+
+        turn_id = getattr(ft, "turn_id", "") or ""
+        pcm = self.ring.slice(ft.start, ft.end)
+        if pcm is None or pcm.size < 16000 // 4:  # < 0.25s -> too short for ASR
+            if partial:
+                return  # a partial with too little audio yet: nothing to emit
+            # BUG3: try to absorb this sub-0.25s fragment into the previous
+            # adjacent same-speaker turn rather than dropping it.
+            prev = self._last_final.get(ft.speaker)
+            if prev is not None and (ft.start - prev.end) <= settings.absorb_gap:
+                merged = FinalizedTurn(
+                    speaker=prev.speaker,
+                    start=prev.start,
+                    end=ft.end,
+                    turn_id=prev.turn_id,
+                )
+                emitted = await self._transcribe_and_emit(merged, partial=False)
+                if emitted:
+                    self._last_final[ft.speaker] = merged
+                return
+            return
+
+        ft_norm = FinalizedTurn(
+            speaker=ft.speaker, start=ft.start, end=ft.end, turn_id=turn_id
+        )
+        emitted = await self._transcribe_and_emit(ft_norm, partial=partial)
+        if emitted and not partial:
+            self._last_final[ft.speaker] = ft_norm
+
+    async def _transcribe_and_emit(self, ft, partial: bool) -> bool:
+        """Slice, apply overlap handling, run ASR, emit a TranscriptMessage.
+
+        Returns True if a transcript was emitted, False if skipped (too short).
+        ``ft`` must expose ``speaker/start/end/turn_id``.
+        """
+        assert self._asr_sem is not None
         async with self._asr_sem:
             pcm = self.ring.slice(ft.start, ft.end)
-            if pcm is None or pcm.size < 16000 // 4:  # < 0.25s -> too short for ASR
-                return
+            if pcm is None or pcm.size < 16000 // 4:
+                return False
+            # BUG2: excise minority overlap / flag majority overlap.
+            pcm, overlapped, overlap_ratio = self._apply_overlap(pcm, ft)
             name, score = self._last_match.get(ft.speaker, (None, None))
             try:
                 lang, text = await self.asr_client.transcribe(pcm)
@@ -450,8 +587,13 @@ class DiarizationSession:
                 end=ft.end,
                 text=text,
                 lang=lang,
+                turn_id=getattr(ft, "turn_id", "") or "",
+                partial=partial,
+                overlapped=overlapped,
+                overlap_ratio=overlap_ratio,
             ).model_dump()
             await self.on_message(msg)
+            return True
 
     def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
         """Return the L2-normalized running centroid for the given speaker.
