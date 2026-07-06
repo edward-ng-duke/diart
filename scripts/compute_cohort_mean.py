@@ -7,14 +7,23 @@ in wespeaker/pyannote embedding spaces (see
 that mean *once* per working embedding model and saves it to
 ``assets/cohort/<model_slug>.npy``, so the running server can load it cheaply.
 
-CRITICAL: the cohort must be an *impostor* set — a handful of DIVERSE audio clips
-that are NOT the speakers we want to identify. Using the enrolled targets as the
-cohort would subtract each target's own direction and is wrong. Here we cut a few
-non-overlapping ~3-5s segments out of ``data/2news.mp3`` (a multi-speaker news
-clip), which is enough to capture each model's shared baseline direction. A
-larger, more diverse multi-speaker cohort (e.g. dozens of clips spanning many
-speakers and recording conditions) would make the mean more robust; this minimal
-set is sufficient to recover the discriminative range.
+CRITICAL: the cohort must be an *impostor* set — DIVERSE audio clips that are
+NOT the speakers we want to identify. Using the enrolled targets as the cohort
+would subtract each target's own direction and is wrong.
+
+Cohort composition (v2, 2026-07-06 false-accept fix — see
+``docs/bugs/2026-07-06-voiceprint-false-accept.md`` §4.1e):
+  * 14 x 4s segments of ``data/2news.mp3`` starting at 28..95s step 5s. The
+    0-27s region is EXCLUDED: it contains the two news speakers used as
+    verification targets (newscaster 0.6-6.6s & 19-24s, reporter 7.8-19s), and
+    a cohort containing the verification targets contaminates the mean.
+  * ALL clips of five AISHELL-3 speakers (SSB0267/0407/0534/0609/0710) from
+    the local HF cache. These are *held out* of the verification pool
+    (scripts/verify_speaker_cross_matrix.py uses different speakers) and add
+    the same-gender/studio/Mandarin shared direction the 2news-only cohort
+    missed — without them, threshold 0.6 could not reject same-gender
+    impostors (they scored 0.72-0.80 against a stranger's enrollment).
+    Skipped with a warning if the cache is absent.
 
 Usage (from repo root):
     DIART_DEVICE=cuda python scripts/compute_cohort_mean.py
@@ -25,6 +34,7 @@ Writes:
 """
 from __future__ import annotations
 
+import glob
 import os
 import subprocess
 import sys
@@ -37,22 +47,41 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
 SRC_MP3 = os.path.join(REPO, "data", "2news.mp3")
-CLIPS_DIR = "/tmp/vp_cohort_clips"
+CLIPS_DIR = "/tmp/vp_cohort_clips_v2"
 OUT_DIR = os.path.join(REPO, "assets", "cohort")
 
-# Diverse ~4s segments tiled across the whole source clip (step 5s). More and
-# more-diverse clips give a cleaner shared-direction estimate and wider
-# same-vs-different separation; empirically a dense sweep of data/2news.mp3
-# (~21 clips) widens the remapped gap vs. a handful of clips. A larger
-# multi-speaker, multi-condition cohort would improve robustness further.
-# (name, start_s, dur_s)
+# ~4s 2news segments tiled at step 5s over 28..95s ONLY (0-27s holds the
+# verification-target speakers; see module docstring). (name -> (start, dur))
 COHORT_SEG_DUR = 4
 COHORT_SEG_STEP = 5
 COHORT_CLIPS = {
     f"coh_{i}": (start, COHORT_SEG_DUR)
-    # 0..95s covers data/2news.mp3 (~105s) without running past the end.
-    for i, start in enumerate(range(0, 96, COHORT_SEG_STEP))
+    for i, start in enumerate(range(28, 96, COHORT_SEG_STEP))
 }
+
+# Held-out AISHELL-3 cohort speakers (never used as enrollment/probe voices in
+# verify_speaker_cross_matrix.py).
+AISHELL_COHORT_SPEAKERS = ["SSB0267", "SSB0407", "SSB0534", "SSB0609", "SSB0710"]
+AISHELL_GLOB = os.path.join(
+    os.path.expanduser("~"),
+    ".cache", "huggingface", "hub",
+    "datasets--AISHELL--AISHELL-3", "snapshots", "*", "train", "wav",
+)
+
+
+def aishell_cohort_wavs() -> list[str]:
+    """All clips of the held-out AISHELL cohort speakers, or [] if absent."""
+    roots = sorted(glob.glob(AISHELL_GLOB))
+    if not roots:
+        print("WARNING: AISHELL-3 HF cache not found; cohort will be 2news-only")
+        return []
+    wavs: list[str] = []
+    for spk in AISHELL_COHORT_SPEAKERS:
+        hits = sorted(glob.glob(os.path.join(roots[0], spk, "*.wav")))
+        if not hits:
+            print(f"WARNING: AISHELL speaker {spk} missing from cache; skipping")
+        wavs.extend(hits)
+    return wavs
 
 # model hf_name -> (local checkpoint path relative to models/, backend)
 MODELS = {
@@ -91,6 +120,20 @@ def load_wav(path: str) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def load_wav_16k(path: str) -> np.ndarray:
+    """Load any wav (e.g. 44.1 kHz AISHELL clips) as mono float32 16 kHz."""
+    import soundfile as sf
+
+    data, sr = sf.read(path, dtype="float32", always_2d=False)
+    if getattr(data, "ndim", 1) > 1:
+        data = data.mean(axis=1)
+    if sr != 16000:
+        import librosa
+
+        data = librosa.resample(data, orig_sr=sr, target_sr=16000)
+    return np.asarray(data, dtype=np.float32)
+
+
 def unit(v: np.ndarray) -> np.ndarray:
     v = np.asarray(v, dtype=np.float32).reshape(-1)
     n = float(np.linalg.norm(v))
@@ -108,6 +151,9 @@ def main() -> int:
     from diart.blocks.embedding import SpeakerEmbedding
 
     pcms = [load_wav(os.path.join(CLIPS_DIR, f"{n}.wav")) for n in COHORT_CLIPS]
+    aishell = aishell_cohort_wavs()
+    pcms += [load_wav_16k(p) for p in aishell]
+    print(f"cohort clips: {len(COHORT_CLIPS)} x 2news + {len(aishell)} x AISHELL")
 
     for model_name, (rel_path, backend) in MODELS.items():
         bin_path = os.path.join(REPO, "models", rel_path)

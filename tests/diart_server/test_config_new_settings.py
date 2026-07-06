@@ -7,7 +7,9 @@ def test_new_settings_have_expected_defaults():
     assert s.asr_model == "models/Qwen3-ASR-1.7B"
     assert s.asr_api_key == "EMPTY"
     assert s.asr_timeout == 60
-    assert s.match_threshold == 0.6
+    # Recalibrated 0.6 -> 0.82 with the extended (v2) cohort for the per-turn
+    # identity fix (docs/bugs/2026-07-06-voiceprint-false-accept.md §4.1e).
+    assert s.match_threshold == 0.82
     assert s.silence_gap == 0.7
     # Lowered 20.0 -> 12.0 for BUG1 (long-monologue latency defense-in-depth).
     assert s.max_turn_seconds == 12.0
@@ -18,3 +20,6 @@ def test_new_settings_have_expected_defaults():
     assert s.partial_asr_interval == 5.0
     assert s.overlap_max_ratio == 0.5
     assert s.absorb_gap == 1.0
+    # New knob for the 2026-07-06 per-turn voiceprint identity fix: turns
+    # shorter than this emit name=None (unreliable utterance embedding).
+    assert s.min_identify_seconds == 2.0

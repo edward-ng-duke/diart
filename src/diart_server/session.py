@@ -39,6 +39,11 @@ from diart.sinks import PredictionAccumulator
 
 from diart_server import metrics
 from diart_server.config import settings
+from diart_server.embedding_extractor import (
+    EMBED_EXECUTOR,
+    extract as extract_utterance_embedding,
+    make_embedder,
+)
 from diart_server.meeting_audio_source import MeetingAudioSource
 from diart_server.models_registry import ModelsRegistry
 from diart_server.pcm_ring_buffer import PcmRingBuffer
@@ -213,7 +218,17 @@ class DiarizationSession:
         self.aggregator: TurnAggregator = TurnAggregator(
             settings.silence_gap, settings.max_turn_seconds
         )
+        # Last TURN-VERIFIED identity per diart label (written only by
+        # _transcribe_and_emit after re-embedding a turn's own audio; see
+        # docs/bugs/2026-07-06-voiceprint-false-accept.md). Read by
+        # _on_prediction as a display hint for the prediction stream so it
+        # never contradicts the transcript.
         self._last_match: dict[str, tuple[Optional[str], Optional[float]]] = {}
+        # Lazily-built SpeakerEmbedding used for per-turn identification.
+        # Created on the EMBED_EXECUTOR thread on first use; constructed with
+        # the pipeline's device so its internal .to() never moves the shared
+        # registry model off the pipeline's device.
+        self._identity_embedder = None
         self._asr_sem: Optional[asyncio.Semaphore] = None
         self._asr_futures: set = set()
         # BUG2: multi-speaker (overlap) intervals in diart's timeline, merged
@@ -402,16 +417,13 @@ class DiarizationSession:
         for turn, _, speaker in annotation.itertracks(yield_label=True):
             self._speaker_counts[speaker] += 1
             embedding = self._extract_embedding(speaker)
-            name, score = None, None
-            if self.store is not None and embedding is not None:
-                refs = self.store.vectors(self.params.embedding_model)
-                name, score = vp_match(
-                    embedding,
-                    refs,
-                    settings.match_threshold,
-                    mean_embedding=self.cohort_mean,
-                )
-                self._last_match[speaker] = (name, score)
+            # Identity is NEVER computed from the cluster centroid here: the
+            # centroid is a blend of every voice diart assigned to the label,
+            # which false-accepted impostors at 0.8-0.9 (see
+            # docs/bugs/2026-07-06-voiceprint-false-accept.md). name/score
+            # echo the last turn-verified identity for this label (written by
+            # _transcribe_and_emit); None before the first identified turn.
+            name, score = self._last_match.get(speaker, (None, None))
             msg = PredictionMessage(
                 type="prediction",
                 start=turn.start,
@@ -562,10 +574,20 @@ class DiarizationSession:
             self._last_final[ft.speaker] = ft_norm
 
     async def _transcribe_and_emit(self, ft, partial: bool) -> bool:
-        """Slice, apply overlap handling, run ASR, emit a TranscriptMessage.
+        """Slice, apply overlap handling, identify, run ASR, emit a transcript.
 
         Returns True if a transcript was emitted, False if skipped (too short).
         ``ft`` must expose ``speaker/start/end/turn_id``.
+
+        Identity comes from the turn's OWN (overlap-excised) audio, re-embedded
+        with the same extractor used for enrollment and matched with the same
+        matcher - never from the diart cluster label (the cluster centroid is a
+        blend of every voice assigned to the label and false-accepted impostors
+        at 0.8-0.9; docs/bugs/2026-07-06-voiceprint-false-accept.md). Turns and
+        partials shorter than ``settings.min_identify_seconds`` emit
+        ``name=None`` (no centroid fallback, no previous-turn fallback - both
+        were the bug). Partials go through the same path, so a growing open
+        turn's identity firms up and the final (same turn_id) replaces it.
         """
         assert self._asr_sem is not None
         async with self._asr_sem:
@@ -574,7 +596,26 @@ class DiarizationSession:
                 return False
             # BUG2: excise minority overlap / flag majority overlap.
             pcm, overlapped, overlap_ratio = self._apply_overlap(pcm, ft)
-            name, score = self._last_match.get(ft.speaker, (None, None))
+            name, score = None, None
+            dur = ft.end - ft.start
+            if self.store is not None and dur >= settings.min_identify_seconds:
+                loop = asyncio.get_running_loop()
+                try:
+                    name, score = await loop.run_in_executor(
+                        EMBED_EXECUTOR, self._identify_slice, pcm
+                    )
+                except Exception:  # noqa: BLE001
+                    # Fail closed: an identification error must never stamp a
+                    # name on the turn (and must not block the transcript).
+                    logger.warning(
+                        "per-turn identification failed for %s [%0.2f-%0.2f]",
+                        ft.speaker, ft.start, ft.end, exc_info=True,
+                    )
+                    name, score = None, None
+                else:
+                    # Surface the turn-verified identity on the prediction
+                    # stream (both partial and final go through here).
+                    self._last_match[ft.speaker] = (name, score)
             try:
                 lang, text = await self.asr_client.transcribe(pcm)
             except Exception:  # noqa: BLE001
@@ -594,6 +635,33 @@ class DiarizationSession:
             ).model_dump()
             await self.on_message(msg)
             return True
+
+    def _identify_slice(
+        self, pcm: np.ndarray
+    ) -> tuple[Optional[str], Optional[float]]:
+        """Embed a turn's own audio and match it against enrolled voiceprints.
+
+        Runs on the single-worker ``EMBED_EXECUTOR`` thread (never on the
+        asyncio loop). The per-session :class:`SpeakerEmbedding` wrapper is
+        created lazily on first use with the pipeline's device
+        (``settings.device``) so its constructor-time ``model.to()`` is a
+        no-op against the shared registry model. Concurrent forwards from the
+        inference thread (diart's own embedding step) are safe: eval mode,
+        ``no_grad``, no mutable module state.
+        """
+        if self._identity_embedder is None:
+            self._identity_embedder = make_embedder(
+                self.params.embedding_model,
+                self.registry,
+                torch.device(settings.device),
+            )
+        vec = extract_utterance_embedding(pcm, self._identity_embedder)
+        return vp_match(
+            vec,
+            self.store.vectors(self.params.embedding_model),
+            settings.match_threshold,
+            mean_embedding=self.cohort_mean,
+        )
 
     def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
         """Return the L2-normalized running centroid for the given speaker.

@@ -8,7 +8,8 @@ import wave
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
-from diart_server.embedding_extractor import extract, make_embedder
+from diart_server.config import settings
+from diart_server.embedding_extractor import EMBED_EXECUTOR, extract, make_embedder
 from diart_server.protocol import EnrollResponse
 
 voiceprint_router = APIRouter()
@@ -75,8 +76,17 @@ async def enroll(
     try:
         # Offload the blocking model load + forward pass off the event loop
         # so a slow/failed enrollment cannot stall live WebSocket sessions.
+        # Runs on the single-worker EMBED_EXECUTOR (serialized with per-turn
+        # identification) and passes the server device explicitly: building a
+        # SpeakerEmbedding without a device would move the SHARED registry
+        # model to CPU and crash live cuda sessions (see
+        # docs/bugs/2026-07-06-voiceprint-false-accept.md §3.2).
+        import torch  # local import keeps module import light
+
+        device = torch.device(settings.device)
         vec = await loop.run_in_executor(
-            None, lambda: extract(pcm, make_embedder(embedding_model, registry))
+            EMBED_EXECUTOR,
+            lambda: extract(pcm, make_embedder(embedding_model, registry, device)),
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(

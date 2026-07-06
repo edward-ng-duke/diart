@@ -8,10 +8,18 @@ Exercises the REAL call chain the running server uses:
 on three clips cut from data/2news.mp3 (A1/A2 = same speaker, B = different),
 loading the committed wespeaker cohort mean from assets/cohort/. It confirms:
 
-    * same-speaker query A2 against ref {"A": A1} returns name "A" with a
-      remapped score ABOVE settings.match_threshold, and
     * different-speaker query B against ref {"A": A1} returns None (BELOW
-      threshold).
+      threshold), and
+    * same-speaker query A2 scores clearly above B (gap >= 0.10) at a usable
+      absolute level (>= 0.75).
+
+NOTE (2026-07-06 recalibration, docs/bugs/2026-07-06-voiceprint-false-accept.md
+§4.1e): A1 and A2 come from DIFFERENT broadcast segments (studio lead-in vs
+the 19-24s tail), i.e. this SAME pair is cross-channel. Under the per-turn
+identity calibration (extended cohort + threshold 0.82) cross-channel genuine
+deliberately lands *below* the accept threshold -> shown as "unknown", never
+as a wrong name. So this script asserts separation/ordering, not
+same_score > match_threshold.
 
 Usage (from repo root):
     DIART_DEVICE=cuda python scripts/verify_match_separation.py
@@ -97,7 +105,13 @@ def main() -> int:
     print(f"SAME  (A2 vs A): name={same_name!r} score={same_score:.3f}")
     print(f"DIFF  (B  vs A): name={diff_name!r} score={diff_score:.3f}")
 
-    ok = (same_name == "A" and same_score > thr) and (diff_name is None)
+    ok = (
+        diff_name is None
+        and same_score >= diff_score + 0.10
+        and same_score >= 0.75
+    )
+    print("PASS criterion: diff_name is None AND same-diff >= 0.10 "
+          "AND same >= 0.75")
     print("RESULT:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 

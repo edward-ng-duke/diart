@@ -42,15 +42,26 @@ class Settings(BaseSettings):
     )
     asr_api_key: str = Field(default="EMPTY", validation_alias="DIART_ASR_API_KEY")
     asr_timeout: float = Field(default=60, validation_alias="DIART_ASR_TIMEOUT")
-    # Tuned for the mean-centered + remapped [0,1] voiceprint score (see
-    # docs/bugs/2026-06-30-voiceprint-score-compression.md). Measured on the
-    # real embed->match chain (data/2news.mp3 clips A1/A2 same, B different):
-    #   wespeaker:        same=0.753 diff=0.462
-    #   pyannote/embedding: same=0.712 diff=0.563
-    # 0.60 sits above both different-speaker scores and below both
-    # same-speaker scores, separating them for both working embedding models.
+    # Tuned for the mean-centered + remapped [0,1] voiceprint score with the
+    # extended cohort (14 x 4s 2news clips at 28-95s + 5 held-out AISHELL-3
+    # speakers; scripts/compute_cohort_mean.py). Recalibrated 0.60 -> 0.82 for
+    # the per-turn identity fix: on the cross-validation pool (5 AISHELL
+    # speakers incl. the near-twin pair SSB0261/SSB0590 + the two 2news
+    # speakers), turn-level impostor scores max ~0.79 while asserted-genuine
+    # scores min ~0.84 (see docs/bugs/2026-07-06-voiceprint-false-accept.md
+    # §3.3/§4.1e). The old 0.60 (2news-only cohort) could not reject
+    # same-gender impostors (they score 0.72-0.80). Cross-channel genuine may
+    # fall below 0.82 -> shown as unknown, never as a wrong name.
     match_threshold: float = Field(
-        default=0.6, validation_alias="DIART_MATCH_THRESHOLD"
+        default=0.82, validation_alias="DIART_MATCH_THRESHOLD"
+    )
+    # Minimum turn/partial duration (seconds) for per-turn voiceprint
+    # identification. Shorter slices give unreliable utterance embeddings
+    # (genuine/impostor score ranges overlap below ~2s); such turns emit
+    # name=None (no centroid fallback, no previous-turn fallback - both were
+    # the false-accept bug). See 2026-07-06-voiceprint-false-accept.md §4.1b.
+    min_identify_seconds: float = Field(
+        default=2.0, validation_alias="DIART_MIN_IDENTIFY_SECONDS"
     )
     silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
     # Lowered 20.0 -> 12.0 as defense-in-depth for BUG1 (long-monologue latency):

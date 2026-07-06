@@ -42,7 +42,16 @@ class ReadyMessage(BaseModel):
 
 
 class PredictionMessage(BaseModel):
-    """Streamed once per inference window with detected speaker info."""
+    """Streamed once per inference window with detected speaker info.
+
+    ``name``/``score`` are a display hint echoing the last TURN-VERIFIED
+    identity for this diart label: identity is computed per transcript turn
+    from the turn's own audio (see ``TranscriptMessage``), never from the
+    cluster centroid (centroid matching false-accepted impostors; see
+    docs/bugs/2026-07-06-voiceprint-false-accept.md). ``None`` until the first
+    identified turn for the label. ``embedding`` still carries the running
+    cluster centroid for API compatibility.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -93,7 +102,13 @@ class EndControl(BaseModel):
 
 
 class TranscriptMessage(BaseModel):
-    """Per-utterance ASR result, sent when a speaker turn is finalized."""
+    """Per-utterance ASR result, sent when a speaker turn is finalized.
+
+    ``name``/``score`` come from re-embedding THIS turn's own (overlap-excised)
+    audio and matching it against enrolled voiceprints. Turns shorter than
+    ``settings.min_identify_seconds`` carry ``name=None`` (too little audio for
+    a reliable utterance embedding).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
