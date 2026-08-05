@@ -322,7 +322,10 @@ def test_turn_identity_from_own_slice_not_cluster_cache(monkeypatch):
 
 def test_short_turn_gets_no_name_even_with_cached_match(monkeypatch):
     """A turn below min_identify_seconds emits name=None/score=None - no
-    centroid fallback, no previous-turn fallback (both were the bug)."""
+    centroid fallback, no previous-turn fallback (both were the bug). With
+    >= min_candidate_seconds of pure speech the embed+match chain still runs,
+    but ONLY as a display candidate (cand_name/cand_score) that never touches
+    _last_match."""
     _fake_asr(monkeypatch)
     _with_cohort(monkeypatch)  # so the DURATION gate (not the cohort gate) is tested
     loop, t = _spin_loop()
@@ -339,7 +342,8 @@ def test_short_turn_gets_no_name_even_with_cached_match(monkeypatch):
         session._asr_sem = asyncio.Semaphore(2)
         session.ring.append(np.full(16000 * 2, 0.05, dtype=np.float32))
         session._last_match["speaker0"] = ("bob", 0.99)  # pre-seeded stale id
-        # 1.0s: above the 0.25s ASR gate, below min_identify_seconds (2.0).
+        # 1.0s: above the 0.25s ASR gate, below min_identify_seconds (2.0),
+        # above min_candidate_seconds (0.6).
         _run_handle_turn(session, FinalizedTurn("speaker0", 0.0, 1.0, "TID-S"), loop)
     finally:
         _stop_loop(loop, t)
@@ -347,8 +351,44 @@ def test_short_turn_gets_no_name_even_with_cached_match(monkeypatch):
     with lock:
         transcripts = [m for m in messages if m.get("type") == "transcript"]
     assert len(transcripts) == 1
-    assert transcripts[0]["name"] is None and transcripts[0]["score"] is None
-    assert calls == [], "identify must not run for sub-min_identify turns"
+    tr = transcripts[0]
+    assert tr["name"] is None and tr["score"] is None
+    assert calls == [1], "the candidate chain must run above the 0.6s floor"
+    assert tr["cand_name"] == "alice" and tr["cand_score"] == 0.9
+    # Display-only: the verified-identity cache keeps the pre-seeded value.
+    assert session._last_match["speaker0"] == ("bob", 0.99)
+
+
+def test_below_candidate_floor_never_embeds(monkeypatch):
+    """A turn under min_candidate_seconds (0.6s) never reaches the embedder:
+    no confirmed name AND no display candidate."""
+    _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)
+    loop, t = _spin_loop()
+    messages, lock = [], threading.Lock()
+
+    async def on_message(msg):
+        with lock:
+            messages.append(msg)
+
+    session = _make_session(loop, on_message, store=_FakeStore())
+    calls = []
+    session._identify_slice = lambda pcm: calls.append(1) or ("alice", 0.9)
+    try:
+        session._asr_sem = asyncio.Semaphore(2)
+        session.ring.append(np.full(16000, 0.05, dtype=np.float32))
+        # 0.5s: above the 0.25s ASR gate, below min_candidate_seconds (0.6).
+        _run_handle_turn(session, FinalizedTurn("speaker0", 0.0, 0.5, "TID-F"), loop)
+    finally:
+        _stop_loop(loop, t)
+
+    with lock:
+        transcripts = [m for m in messages if m.get("type") == "transcript"]
+    assert len(transcripts) == 1
+    tr = transcripts[0]
+    assert calls == [], "no embedding forward below the candidate floor"
+    assert tr["name"] is None and tr["score"] is None
+    assert tr["cand_name"] is None and tr["cand_score"] is None
 
 
 def test_identify_failure_fails_closed_but_emits_transcript(monkeypatch):

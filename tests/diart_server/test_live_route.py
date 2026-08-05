@@ -39,6 +39,10 @@ def test_live_page_identity_continuity_hint_static_asserts():
     assert ".hint{" in r.text
     assert "≈" in r.text
     assert "lastVerified" in r.text
+    # Per-line measured candidate (cand_name/cand_score) takes precedence over
+    # the lastVerified fallback and renders with its real score.
+    assert "m.cand_name" in r.text
+    assert "m.cand_score.toFixed(2)" in r.text
 
 
 def test_live_page_dropdown_references_voiceprint_ready():

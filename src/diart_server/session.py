@@ -655,6 +655,10 @@ class DiarizationSession:
         majority-overlap turns, whose audio is a two-speaker mix — emit
         ``name=None`` (no centroid fallback, no previous-turn fallback - both
         were the bug; docs/bugs/2026-08-05-identity-continuity-overlap-purity.md).
+        Turns with pure speech in ``[min_candidate_seconds,
+        min_identify_seconds)`` still run the same embed+match chain but emit
+        the best match ONLY as ``cand_name``/``cand_score`` — display-only,
+        never a confirmed ``name``, never written to ``_last_match``.
         Partials go through the same path, so a growing open
         turn's identity firms up and the final (same turn_id) replaces it.
         Sessions without a cohort mean skip identification entirely
@@ -671,6 +675,7 @@ class DiarizationSession:
                 pcm, ft
             )
             name, score = None, None
+            cand_name, cand_score = None, None
             pure_seconds = (
                 identity_pcm.size / self.ring.sample_rate
                 if identity_pcm is not None else 0.0
@@ -679,11 +684,11 @@ class DiarizationSession:
                 self.store is not None
                 and self.cohort_mean is not None
                 and identity_pcm is not None
-                and pure_seconds >= settings.min_identify_seconds
+                and pure_seconds >= settings.min_candidate_seconds
             ):
                 loop = asyncio.get_running_loop()
                 try:
-                    name, score = await loop.run_in_executor(
+                    cand_name, cand_score = await loop.run_in_executor(
                         EMBED_EXECUTOR, self._identify_slice, identity_pcm
                     )
                 except Exception:  # noqa: BLE001
@@ -693,11 +698,26 @@ class DiarizationSession:
                         "per-turn identification failed for %s [%0.2f-%0.2f]",
                         ft.speaker, ft.start, ft.end, exc_info=True,
                     )
-                    name, score = None, None
+                    cand_name, cand_score = None, None
                 else:
-                    # Surface the turn-verified identity on the prediction
-                    # stream (both partial and final go through here).
-                    self._last_match[ft.speaker] = (name, score)
+                    if pure_seconds >= settings.min_identify_seconds:
+                        # Full-length run: the calibrated threshold decides the
+                        # CONFIRMED name; below it keep the legacy contract of
+                        # name=None with the best score still surfaced.
+                        if (
+                            cand_name is not None
+                            and cand_score is not None
+                            and cand_score >= settings.match_threshold
+                        ):
+                            name, score = cand_name, cand_score
+                        else:
+                            name, score = None, cand_score
+                        # Surface the turn-verified identity on the prediction
+                        # stream (both partial and final go through here).
+                        # Candidate-only runs (pure < min_identify_seconds)
+                        # never touch it: their embeddings are below the
+                        # calibrated reliability floor.
+                        self._last_match[ft.speaker] = (name, score)
             try:
                 lang, text = await self.asr_client.transcribe(pcm)
             except Exception:  # noqa: BLE001
@@ -714,6 +734,8 @@ class DiarizationSession:
                 partial=partial,
                 overlapped=overlapped,
                 overlap_ratio=overlap_ratio,
+                cand_name=cand_name,
+                cand_score=cand_score,
             ).model_dump()
             await self.on_message(msg)
             return True
@@ -738,10 +760,14 @@ class DiarizationSession:
                 torch.device(settings.device),
             )
         vec = extract_utterance_embedding(pcm, self._identity_embedder)
+        # Threshold 0.0: always return the BEST (name, score) candidate. The
+        # caller applies settings.match_threshold when deciding whether the
+        # run may stamp a CONFIRMED name, so the same forward also serves
+        # display-only candidates (cand_name/cand_score) for shorter turns.
         return vp_match(
             vec,
             self.store.vectors(self.params.embedding_model),
-            settings.match_threshold,
+            0.0,
             mean_embedding=self.cohort_mean,
         )
 

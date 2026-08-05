@@ -63,6 +63,18 @@ class Settings(BaseSettings):
     min_identify_seconds: float = Field(
         default=2.0, validation_alias="DIART_MIN_IDENTIFY_SECONDS"
     )
+    # Floor (seconds of PURE non-overlapped speech) for DISPLAY-ONLY candidate
+    # identification. Turns/partials with pure speech in
+    # [min_candidate_seconds, min_identify_seconds) still run the embed+match
+    # chain, but the best match is emitted only as cand_name/cand_score (the
+    # demo renders a dimmed "≈name score?") and never stamps ``name`` nor
+    # updates ``_last_match`` — sub-2s utterance embeddings are unreliable
+    # (2026-07-06 §4.1b), yet the measured score is useful for observability
+    # and future threshold recalibration. Set >= min_identify_seconds to
+    # disable candidate-only runs.
+    min_candidate_seconds: float = Field(
+        default=0.6, validation_alias="DIART_MIN_CANDIDATE_SECONDS"
+    )
     silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
     # Lowered 20.0 -> 12.0 as defense-in-depth for BUG1 (long-monologue latency):
     # even with partial ASR disabled, worst-case final transcript latency drops

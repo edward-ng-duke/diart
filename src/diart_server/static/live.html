@@ -93,10 +93,22 @@ const turnLines = new Map(); // turn_id -> <div> for partial->final replacement
 // server never stamps a name it did not verify on this turn.
 const lastVerified = new Map(); // diart label -> {name, score}
 function lineHTML(m){
-  const hint = (!m.name && lastVerified.has(m.speaker))
-    ? ` <span class="hint">≈${lastVerified.get(m.speaker).name}?</span>` : '';
-  const who = m.name ? `<span class="name">${m.name}</span>` : `<span class="unk">${m.speaker}</span>${hint}`;
-  const sc = (m.score!=null)?` (${m.score.toFixed(2)})`:'';
+  let who, sc='';
+  if(m.name){
+    who = `<span class="name">${m.name}</span>`;
+    if(m.score!=null) sc = ` (${m.score.toFixed(2)})`;
+  } else {
+    who = `<span class="unk">${m.speaker}</span>`;
+    if(m.cand_name!=null && m.cand_score!=null){
+      // This turn's OWN measured best match (below the confirm gate) —
+      // uncertain by definition, so it renders dimmed with its real score.
+      who += ` <span class="hint">≈${m.cand_name} ${m.cand_score.toFixed(2)}?</span>`;
+    } else {
+      if(m.score!=null) sc = ` (${m.score.toFixed(2)})`;
+      if(lastVerified.has(m.speaker))
+        who += ` <span class="hint">≈${lastVerified.get(m.speaker).name}?</span>`;
+    }
+  }
   const ov = m.overlapped ? ` <span class="badge">⑂重叠</span>` : '';
   return `<span class="t">${m.start.toFixed(1)}–${m.end.toFixed(1)}s</span> ${who}${sc}: ${m.text}${ov}`;
 }

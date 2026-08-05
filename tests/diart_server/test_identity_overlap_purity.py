@@ -189,12 +189,18 @@ def test_majority_overlap_skips_identify_and_preserves_last_match(monkeypatch):
     assert len(transcripts) == 1
     tr = transcripts[0]
     assert tr["name"] is None and tr["score"] is None
+    # Mixed audio must not even produce a display candidate (measured
+    # false-accept at 0.823 on mixed slices).
+    assert tr["cand_name"] is None and tr["cand_score"] is None
     assert tr["overlapped"] is True
 
 
-def test_pure_duration_below_gate_skips_identify(monkeypatch):
-    """§5.1c: 3s turn with only 1.5s pure speech (< min_identify_seconds=2.0)
-    must not be identified even though the TOTAL duration passes the gate."""
+def test_pure_duration_below_gate_is_candidate_only(monkeypatch):
+    """§5.1c (amended 2026-08-06 for candidate display): 3s turn with only
+    1.5s pure speech (< min_identify_seconds=2.0 but >= min_candidate_seconds
+    =0.6) runs the chain on the pure concatenation yet must NOT stamp a
+    confirmed name nor touch _last_match — the result surfaces only as
+    cand_name/cand_score."""
     transcripts, calls, session = _run_turn_with_spy(
         monkeypatch,
         ring_pcm=np.full(SR * 3, 0.05, dtype=np.float32),
@@ -202,11 +208,14 @@ def test_pure_duration_below_gate_skips_identify(monkeypatch):
         overlap_intervals=[(0.0, 1.5)],  # ratio 0.5 -> minority, pure 1.5s
         last_match={"speaker0": ("seed", 0.5)},
     )
-    assert calls == [], "identify must not run below the PURE-seconds gate"
+    assert len(calls) == 1, "candidate chain runs on >= 0.6s of pure speech"
+    assert calls[0].size == int(1.5 * SR), "candidate input is the pure concat"
     assert session._last_match == {"speaker0": ("seed", 0.5)}
     assert len(transcripts) == 1
-    assert transcripts[0]["name"] is None and transcripts[0]["score"] is None
-    assert transcripts[0]["overlapped"] is False
+    tr = transcripts[0]
+    assert tr["name"] is None and tr["score"] is None
+    assert tr["cand_name"] == "alice" and tr["cand_score"] == 0.9
+    assert tr["overlapped"] is False
 
 
 def test_pure_duration_above_gate_identifies_pure_concatenation(monkeypatch):
@@ -242,3 +251,5 @@ def test_below_threshold_result_still_updates_last_match(monkeypatch):
     assert session._last_match["speaker0"] == (None, 0.5)
     assert len(transcripts) == 1
     assert transcripts[0]["name"] is None and transcripts[0]["score"] == 0.5
+    # The below-threshold full-length run is also surfaced as the candidate.
+    assert transcripts[0]["cand_score"] == 0.5

@@ -138,6 +138,15 @@ class TranscriptMessage(BaseModel):
     overlapped: bool = False
     # BUG2: fraction of the turn [start,end] that overlapped another speaker.
     overlap_ratio: float = 0.0
+    # Display-only best-match candidate from THIS turn's own pure speech,
+    # emitted whenever the embed+match chain ran (pure seconds >=
+    # settings.min_candidate_seconds) — including runs too short or too
+    # low-scoring to stamp a confirmed ``name``. NEVER a verified identity:
+    # clients must render it as uncertain (the demo shows a dimmed
+    # "≈name score?"). None when identification did not run at all
+    # (majority overlap, no cohort, no store, or pure speech below the floor).
+    cand_name: str | None = None
+    cand_score: float | None = None
 
 
 class VoiceprintInfo(BaseModel):
