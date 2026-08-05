@@ -21,7 +21,7 @@
  </div>
  <div class="row">
    <input id="enrollName" placeholder="注册姓名">
-   <button id="enrollBtn">录 4 秒并注册</button>
+   <button id="enrollBtn">录 6 秒并注册</button>
    <span id="enrollStatus" class="t"></span>
  </div>
  <div class="row">
@@ -34,6 +34,12 @@
 <script>
 const $=s=>document.querySelector(s);
 let ws, audioCtx, node, stream, running=false;
+let enrolling=false, enrollBuf=[];
+const ENROLL_MS = 6000;
+// Enrollment and live identification MUST share this exact capture channel
+// (docs/bugs/2026-08-05-enroll-channel-mismatch.md): browser DSP off, one
+// getUserMedia call site, raw PCM on the wire, torchaudio resamples server-side.
+const MIC = {channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:false};
 
 async function loadModels(){
   const info = await (await fetch('/v1/info')).json();
@@ -50,21 +56,32 @@ async function loadModels(){
   seg.value = [...seg.options].find(o=>o.value.includes('segmentation-3.0'))?.value || seg.value;
 }
 
-function downsampleSend(buf, inRate){
+function downsampleSend(buf){
+  if(enrolling) return;
   // send float32 LE mono at native rate; server resamples to 16k
   if(ws && ws.readyState===1) ws.send(buf.buffer);
 }
 
-async function capture(onFrame){
-  stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
-  audioCtx = new AudioContext();
+// Single frame router: enrollment captures raw frames, live streams them.
+function onMicFrame(f){ if(enrolling){ enrollBuf.push(f); return; } downsampleSend(f); }
+
+// The ONE capture call site: both live and enrollment go through here.
+async function openMic(){
+  stream = await navigator.mediaDevices.getUserMedia({audio:MIC});
   const src = audioCtx.createMediaStreamSource(stream);
   const proc = audioCtx.createScriptProcessor(8192,1,1); // ~0.18s @48k
-  proc.onaudioprocess = e => onFrame(new Float32Array(e.inputBuffer.getChannelData(0)));
+  proc.onaudioprocess = e => onMicFrame(new Float32Array(e.inputBuffer.getChannelData(0)));
   src.connect(proc); proc.connect(audioCtx.destination);
   node = proc;
-  return audioCtx.sampleRate;
 }
+
+function teardownCapture(){
+  if(node){ node.disconnect(); node=null; }
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  if(audioCtx){ audioCtx.close(); audioCtx=null; }
+}
+
+function setSelectsDisabled(d){ $('#emb').disabled=d; $('#seg').disabled=d; }
 
 const turnLines = new Map(); // turn_id -> <div> for partial->final replacement
 function lineHTML(m){
@@ -96,49 +113,85 @@ function addLine(m){
 
 $('#startBtn').onclick = async ()=>{
   $('#startBtn').disabled=true; $('#stopBtn').disabled=false; running=true;
-  const sr0 = await capture(f=>downsampleSend(f, audioCtx.sampleRate));
-  const q = new URLSearchParams({sample_rate:String(sr0), embedding_model:$('#emb').value, segmentation_model:$('#seg').value});
+  setSelectsDisabled(true);
+  // WebSocket BEFORE mic: the mic only opens once the server says 'ready',
+  // so no early frame is dropped by the ws.readyState guard.
+  audioCtx = new AudioContext();
+  const q = new URLSearchParams({sample_rate:String(audioCtx.sampleRate), embedding_model:$('#emb').value, segmentation_model:$('#seg').value});
   const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${wsScheme}://${location.host}/v1/diarize/stream?${q}`);
   ws.binaryType='arraybuffer';
-  ws.onmessage = ev=>{
+  let ready=false;
+  ws.onmessage = async ev=>{
     const m=JSON.parse(ev.data);
-    if(m.type==='ready') $('#status').textContent='listening · '+m.session_id.slice(0,8);
+    if(m.type==='ready'){
+      $('#status').textContent='listening · '+m.session_id.slice(0,8);
+      if(!ready){ ready=true; await openMic(); }
+    }
     else if(m.type==='transcript') addLine(m);
     else if(m.type==='error') $('#status').textContent='error: '+m.message;
   };
+  const failBeforeReady = why=>{
+    if(ready || !running) return;
+    running=false;
+    teardownCapture();
+    $('#startBtn').disabled=false; $('#stopBtn').disabled=true;
+    if(!enrolling) setSelectsDisabled(false);
+    $('#status').textContent=why;
+  };
+  ws.onerror = ()=>failBeforeReady('error: websocket');
+  ws.onclose = ()=>failBeforeReady('closed before ready');
 };
 
 $('#stopBtn').onclick = ()=>{
   running=false; $('#startBtn').disabled=false; $('#stopBtn').disabled=true;
   if(ws && ws.readyState===1) ws.send(JSON.stringify({type:'end'}));
-  if(node) node.disconnect(); if(audioCtx) audioCtx.close();
-  if(stream) stream.getTracks().forEach(t=>t.stop());
+  teardownCapture();
+  if(!enrolling) setSelectsDisabled(false);
   $('#status').textContent='stopped';
 };
 
 $('#enrollBtn').onclick = async ()=>{
   const name=$('#enrollName').value.trim(); if(!name){$('#enrollStatus').textContent='填姓名';return;}
-  $('#enrollStatus').textContent='录音中…';
-  const s = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1}});
-  const rec = new MediaRecorder(s); const chunks=[];
-  rec.ondataavailable=e=>chunks.push(e.data);
-  rec.onstop = async ()=>{
-    s.getTracks().forEach(t=>t.stop());
-    // decode webm -> 16k mono wav via OfflineAudioContext
-    const buf = await new Blob(chunks).arrayBuffer();
-    const ac = new AudioContext(); const decoded = await ac.decodeAudioData(buf); ac.close();
-    const off = new OfflineAudioContext(1, Math.ceil(decoded.duration*16000), 16000);
-    const bs = off.createBufferSource(); bs.buffer=decoded; bs.connect(off.destination); bs.start();
-    const rendered = await off.startRendering();
-    const wav = encodeWav(rendered.getChannelData(0), 16000);
-    const fd = new FormData();
-    fd.append('name', name); fd.append('embedding_model', $('#emb').value);
-    fd.append('file', new Blob([wav],{type:'audio/wav'}), 'enroll.wav');
+  if(enrolling) return;
+  // Reuse the live capture when running; otherwise open our own (same channel).
+  let ownCapture=false;
+  if(!running){ audioCtx = new AudioContext(); await openMic(); ownCapture=true; }
+  enrollBuf=[]; enrolling=true; // onMicFrame now buffers; nothing reaches the live WS
+  $('#enrollBtn').disabled=true; $('#startBtn').disabled=true; $('#stopBtn').disabled=true;
+  setSelectsDisabled(true);
+  let left = ENROLL_MS/1000;
+  $('#enrollStatus').textContent='录音中… 剩 '+left+'s';
+  const tick = setInterval(()=>{ left--; if(left>=1) $('#enrollStatus').textContent='录音中… 剩 '+left+'s'; }, 1000);
+  await new Promise(res=>setTimeout(res, ENROLL_MS));
+  clearInterval(tick);
+  enrolling=false; // live frames resume
+  const total = enrollBuf.reduce((a,b)=>a+b.length, 0);
+  const f32 = new Float32Array(total);
+  let off=0; for(const b of enrollBuf){ f32.set(b, off); off+=b.length; }
+  enrollBuf=[];
+  // Raw PCM at the NATIVE rate: the server resamples with torchaudio,
+  // the same resampler family every live identification frame goes through.
+  const wav = encodeWav(f32, audioCtx.sampleRate);
+  if(ownCapture) teardownCapture();
+  const fd = new FormData();
+  fd.append('name', name); fd.append('embedding_model', $('#emb').value);
+  fd.append('file', new Blob([wav],{type:'audio/wav'}), 'enroll.wav');
+  try{
     const r = await fetch('/v1/voiceprints', {method:'POST', body:fd});
-    $('#enrollStatus').textContent = r.ok ? ('已注册 '+name) : ('注册失败 '+r.status);
-  };
-  rec.start(); setTimeout(()=>rec.stop(), 4000);
+    if(r.ok){
+      const j = await r.json();
+      $('#enrollStatus').textContent = '已注册 '+name+'（第'+j.n_clips+'条）— 再录1-2条更稳';
+    }else{
+      let detail=''; try{ detail=(await r.json()).detail||''; }catch(e){}
+      $('#enrollStatus').textContent = '注册失败 '+r.status+(detail?('：'+detail):'');
+    }
+  }catch(e){
+    $('#enrollStatus').textContent = '注册失败 '+e;
+  }
+  $('#enrollBtn').disabled=false;
+  if(running){ $('#stopBtn').disabled=false; }
+  else { $('#startBtn').disabled=false; setSelectsDisabled(false); }
 };
 
 function encodeWav(f32, sr){
