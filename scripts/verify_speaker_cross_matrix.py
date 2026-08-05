@@ -88,9 +88,18 @@ def load_wav(p: Path) -> np.ndarray:
     if getattr(data, "ndim", 1) > 1:
         data = data.mean(axis=1)
     if sr != SR:
-        import librosa
+        try:
+            import librosa
 
-        data = librosa.resample(data, orig_sr=sr, target_sr=SR)
+            data = librosa.resample(data, orig_sr=sr, target_sr=SR)
+        except ImportError:
+            # librosa's numba dependency rejects NumPy >= 2.4 (environment
+            # drift, 2026-08-05). librosa.resample's default
+            # res_type="soxr_hq" is a thin wrapper over soxr, so calling
+            # soxr directly is numerically identical.
+            import soxr
+
+            data = soxr.resample(data, sr, SR, quality="HQ")
     return np.asarray(data, dtype=np.float32)
 
 
