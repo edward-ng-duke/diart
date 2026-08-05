@@ -14,6 +14,40 @@ from diart_server.protocol import EnrollResponse
 
 voiceprint_router = APIRouter()
 
+# Route-level silence trim for enrollment clips. Constants validated in
+# docs/bugs/2026-08-05-enroll-channel-mismatch.md §3.4: silence in the clip
+# dilutes the utterance embedding and, combined with the demo's old lossy
+# enrollment channel, pushed genuine users under the match threshold.
+TRIM_FRAME = 320          # 20 ms @ 16 kHz, non-overlapping
+TRIM_REL_RMS = 0.05       # voiced: frame RMS >= 5% of peak frame RMS (~ -26 dB)
+TRIM_ABS_FLOOR = 1e-3     # peak frame RMS below this => all-silence clip
+TRIM_PAD_FRAMES = 2       # keep 40 ms context on each side
+MIN_SPEECH_SECONDS = 1.5  # required speech after trimming
+
+
+def _trim_silence(pcm: np.ndarray, sr: int = 16000) -> np.ndarray | None:
+    """Trim leading/trailing silence from a 16 kHz enrollment clip.
+
+    Returns None when the clip is all-silence (peak frame RMS below
+    TRIM_ABS_FLOOR) or when the kept voiced region is shorter than
+    MIN_SPEECH_SECONDS.
+    """
+    n_frames = pcm.size // TRIM_FRAME
+    if n_frames == 0:
+        return None
+    frames = pcm[: n_frames * TRIM_FRAME].astype(np.float64).reshape(n_frames, TRIM_FRAME)
+    rms = np.sqrt((frames**2).mean(axis=1))
+    peak = rms.max()
+    if peak < TRIM_ABS_FLOOR:
+        return None
+    voiced = np.flatnonzero(rms >= TRIM_REL_RMS * peak)
+    start = max(0, int(voiced[0]) - TRIM_PAD_FRAMES) * TRIM_FRAME
+    end = min(n_frames, int(voiced[-1]) + 1 + TRIM_PAD_FRAMES) * TRIM_FRAME
+    trimmed = pcm[start:end]
+    if trimmed.size < MIN_SPEECH_SECONDS * sr:
+        return None
+    return trimmed
+
 
 def _decode_wav_to_float32(raw: bytes) -> tuple[np.ndarray, int]:
     """Decode WAV bytes to a float32 numpy array and return (pcm, sample_rate).
@@ -71,6 +105,13 @@ async def enroll(
     if pcm.size < 16000 // 2:  # < 0.5 s at 16 kHz
         raise HTTPException(status_code=400, detail="clip too short (need >=0.5s)")
 
+    trimmed = _trim_silence(pcm)
+    if trimmed is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"说话时间不足：修剪静音后有效语音不足 {MIN_SPEECH_SECONDS:g} 秒，请靠近麦克风重新录制",
+        )
+
     registry = getattr(request.app.state, "registry", None)
     loop = asyncio.get_running_loop()
     try:
@@ -86,7 +127,7 @@ async def enroll(
         device = torch.device(settings.device)
         vec = await loop.run_in_executor(
             EMBED_EXECUTOR,
-            lambda: extract(pcm, make_embedder(embedding_model, registry, device)),
+            lambda: extract(trimmed, make_embedder(embedding_model, registry, device)),
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
