@@ -10,6 +10,7 @@
  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0}
  .line{padding:6px 10px;border-left:3px solid #6366f1;margin:4px 0;background:#14171c;border-radius:4px}
  .name{color:#10b981;font-weight:600} .unk{color:#8b929c} .t{color:#8b929c;font-size:12px}
+ .hint{color:#8b929c;font-style:italic;opacity:.85;font-weight:400}
  .line.partial{opacity:.55;font-style:italic;border-left-color:#8b929c}
  .badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:3px;font-size:11px;background:#7c2d12;color:#fed7aa}
 </style></head>
@@ -86,8 +87,15 @@ function teardownCapture(){
 function setSelectsDisabled(d){ $('#emb').disabled=d; $('#seg').disabled=d; }
 
 const turnLines = new Map(); // turn_id -> <div> for partial->final replacement
+// Identity continuity (docs/bugs/2026-08-05-identity-continuity-overlap-purity.md
+// §4.3): the last TURN-VERIFIED identity per diart label, read off the
+// prediction-stream echo. Display-only ≈name? hint for nameless lines — the
+// server never stamps a name it did not verify on this turn.
+const lastVerified = new Map(); // diart label -> {name, score}
 function lineHTML(m){
-  const who = m.name ? `<span class="name">${m.name}</span>` : `<span class="unk">${m.speaker}</span>`;
+  const hint = (!m.name && lastVerified.has(m.speaker))
+    ? ` <span class="hint">≈${lastVerified.get(m.speaker).name}?</span>` : '';
+  const who = m.name ? `<span class="name">${m.name}</span>` : `<span class="unk">${m.speaker}</span>${hint}`;
   const sc = (m.score!=null)?` (${m.score.toFixed(2)})`:'';
   const ov = m.overlapped ? ` <span class="badge">⑂重叠</span>` : '';
   return `<span class="t">${m.start.toFixed(1)}–${m.end.toFixed(1)}s</span> ${who}${sc}: ${m.text}${ov}`;
@@ -131,6 +139,7 @@ $('#startBtn').onclick = async ()=>{
       if(!ready){ ready=true; await openMic(); }
     }
     else if(m.type==='transcript') addLine(m);
+    else if(m.type==='prediction'){ if(m.name!=null) lastVerified.set(m.speaker,{name:m.name,score:m.score}); }
     else if(m.type==='error') $('#status').textContent='error: '+m.message;
   };
   const failBeforeReady = why=>{
