@@ -523,23 +523,34 @@ class DiarizationSession:
                     coalesced.append((s, e))
             self._overlap_intervals = coalesced
 
-    def _apply_overlap(self, pcm: np.ndarray, ft) -> tuple[np.ndarray, bool, float]:
+    def _apply_overlap(
+        self, pcm: np.ndarray, ft
+    ) -> tuple[np.ndarray, bool, float, Optional[np.ndarray]]:
         """Excise (minority) or flag (majority) overlapped audio before ASR.
 
         Pure function of ``pcm`` (a fresh slice copy — safe to mutate) and the
         currently-tracked overlap intervals. Returns ``(pcm, overlapped,
-        overlap_ratio)`` where ``overlap_ratio`` is the fraction of
-        ``[ft.start, ft.end]`` that overlapped another speaker:
+        overlap_ratio, identity_pcm)`` where ``overlap_ratio`` is the fraction
+        of ``[ft.start, ft.end]`` that overlapped another speaker and
+        ``identity_pcm`` is the input for per-turn identification — only the
+        turn's own PURE (non-overlapped) speech, never zero-padded gaps and
+        never a two-speaker mix (2026-08-05-identity-continuity-overlap-purity):
 
+        - ratio == 0: unchanged; overlapped=False; identity_pcm IS the intact
+          slice (same array — the non-overlap scoring chain is bit-identical).
         - ratio <= overlap_max_ratio (minority): zero the overlapped samples in
-          the copied slice (keeps timestamps aligned); overlapped=False.
+          the copied slice for ASR (keeps timestamps aligned); overlapped=False;
+          identity_pcm is the sample-exact concatenation of the non-overlapped
+          sub-slices, built BEFORE the zeroing (zeros dilute the utterance
+          embedding and depress genuine scores).
         - ratio  > overlap_max_ratio (majority): leave audio INTACT (excising
-          would starve ASR); overlapped=True.
-        - ratio == 0: unchanged; overlapped=False.
+          would starve ASR); overlapped=True; identity_pcm=None — a mixed
+          two-speaker embedding can clear the threshold against a speaker who
+          merely talked over the turn, so identification is skipped entirely.
         """
         duration = ft.end - ft.start
         if duration <= 0:
-            return pcm, False, 0.0
+            return pcm, False, 0.0, pcm
         with self._overlap_lock:
             intervals = list(self._overlap_intervals)
         # Intersect each tracked interval with [ft.start, ft.end].
@@ -553,19 +564,38 @@ class DiarizationSession:
                 total += hi - lo
         ratio = total / duration
         if ratio <= 0.0:
-            return pcm, False, 0.0
+            return pcm, False, 0.0, pcm
         if ratio > settings.overlap_max_ratio:
-            # Majority overlap: leave intact, just flag.
-            return pcm, True, ratio
-        # Minority overlap: zero out the overlapped samples (relative offsets).
+            # Majority overlap: leave intact, just flag; no identity input.
+            return pcm, True, ratio, None
         sr = self.ring.sample_rate
         n = pcm.size
+        # Minority overlap: FIRST build identity_pcm from the still-unmutated
+        # pcm — the complement spans of ``subs`` within [ft.start, ft.end],
+        # mapped with the SAME sample convention used for zeroing below
+        # (subs are sorted and non-overlapping: _record_overlaps coalesces).
+        kept: list[np.ndarray] = []
+        cursor = ft.start
+        for lo, hi in subs:
+            i0 = max(0, int(round((cursor - ft.start) * sr)))
+            i1 = min(n, int(round((lo - ft.start) * sr)))
+            if i1 > i0:
+                kept.append(pcm[i0:i1])
+            cursor = hi
+        i0 = max(0, int(round((cursor - ft.start) * sr)))
+        i1 = min(n, int(round((ft.end - ft.start) * sr)))
+        if i1 > i0:
+            kept.append(pcm[i0:i1])
+        identity_pcm = (
+            np.concatenate(kept) if kept else np.empty(0, dtype=np.float32)
+        )
+        # THEN zero out the overlapped samples for ASR (relative offsets).
         for lo, hi in subs:
             i0 = max(0, int(round((lo - ft.start) * sr)))
             i1 = min(n, int(round((hi - ft.start) * sr)))
             if i1 > i0:
                 pcm[i0:i1] = 0.0
-        return pcm, False, ratio
+        return pcm, False, ratio, identity_pcm
 
     async def _handle_turn(self, ft, partial: bool = False) -> None:
         """Process a turn: run ASR and emit a TranscriptMessage.
@@ -613,14 +643,19 @@ class DiarizationSession:
         Returns True if a transcript was emitted, False if skipped (too short).
         ``ft`` must expose ``speaker/start/end/turn_id``.
 
-        Identity comes from the turn's OWN (overlap-excised) audio, re-embedded
-        with the same extractor used for enrollment and matched with the same
+        Identity comes from the turn's OWN PURE (non-overlapped) speech — the
+        ``identity_pcm`` returned by :meth:`_apply_overlap` — re-embedded with
+        the same extractor used for enrollment and matched with the same
         matcher - never from the diart cluster label (the cluster centroid is a
         blend of every voice assigned to the label and false-accepted impostors
-        at 0.8-0.9; docs/bugs/2026-07-06-voiceprint-false-accept.md). Turns and
-        partials shorter than ``settings.min_identify_seconds`` emit
+        at 0.8-0.9; docs/bugs/2026-07-06-voiceprint-false-accept.md). The
+        identification gate is on PURE non-overlapped seconds (the quantity
+        ``min_identify_seconds`` was calibrated on): turns and partials with
+        less than ``settings.min_identify_seconds`` of pure speech — and
+        majority-overlap turns, whose audio is a two-speaker mix — emit
         ``name=None`` (no centroid fallback, no previous-turn fallback - both
-        were the bug). Partials go through the same path, so a growing open
+        were the bug; docs/bugs/2026-08-05-identity-continuity-overlap-purity.md).
+        Partials go through the same path, so a growing open
         turn's identity firms up and the final (same turn_id) replaces it.
         Sessions without a cohort mean skip identification entirely
         (``name=None``): the match threshold is calibrated for the centered
@@ -632,18 +667,24 @@ class DiarizationSession:
             if pcm is None or pcm.size < 16000 // 4:
                 return False
             # BUG2: excise minority overlap / flag majority overlap.
-            pcm, overlapped, overlap_ratio = self._apply_overlap(pcm, ft)
+            pcm, overlapped, overlap_ratio, identity_pcm = self._apply_overlap(
+                pcm, ft
+            )
             name, score = None, None
-            dur = ft.end - ft.start
+            pure_seconds = (
+                identity_pcm.size / self.ring.sample_rate
+                if identity_pcm is not None else 0.0
+            )
             if (
                 self.store is not None
                 and self.cohort_mean is not None
-                and dur >= settings.min_identify_seconds
+                and identity_pcm is not None
+                and pure_seconds >= settings.min_identify_seconds
             ):
                 loop = asyncio.get_running_loop()
                 try:
                     name, score = await loop.run_in_executor(
-                        EMBED_EXECUTOR, self._identify_slice, pcm
+                        EMBED_EXECUTOR, self._identify_slice, identity_pcm
                     )
                 except Exception:  # noqa: BLE001
                     # Fail closed: an identification error must never stamp a

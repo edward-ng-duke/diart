@@ -104,10 +104,13 @@ class EndControl(BaseModel):
 class TranscriptMessage(BaseModel):
     """Per-utterance ASR result, sent when a speaker turn is finalized.
 
-    ``name``/``score`` come from re-embedding THIS turn's own (overlap-excised)
-    audio and matching it against enrolled voiceprints. Turns shorter than
-    ``settings.min_identify_seconds`` carry ``name=None`` (too little audio for
-    a reliable utterance embedding).
+    ``name``/``score`` come from re-embedding THIS turn's own PURE
+    (non-overlapped) speech and matching it against enrolled voiceprints. The
+    identification gate is on pure non-overlapped seconds: turns with less
+    than ``settings.min_identify_seconds`` of pure speech carry ``name=None``
+    (too little audio for a reliable utterance embedding), and majority-overlap
+    turns (mixed two-speaker audio) are never identified
+    (docs/bugs/2026-08-05-identity-continuity-overlap-purity.md).
     """
 
     model_config = ConfigDict(extra="forbid")

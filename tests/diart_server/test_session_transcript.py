@@ -270,9 +270,11 @@ def _with_cohort(monkeypatch):
 
 
 def test_turn_identity_from_own_slice_not_cluster_cache(monkeypatch):
-    """A >= min_identify_seconds turn is identified from its own excised slice;
-    a stale _last_match (the old cluster-label identity) is ignored, and the
-    verified identity is written back for the prediction-stream hint."""
+    """A turn with >= min_identify_seconds of PURE speech is identified from
+    its own slice's non-overlapped samples (B45: sample-exact concatenation,
+    not the zero-excised ASR pcm); a stale _last_match (the old cluster-label
+    identity) is ignored, and the verified identity is written back for the
+    prediction-stream hint."""
     _fake_asr(monkeypatch)
     _with_cohort(monkeypatch)
     loop, t = _spin_loop()
@@ -306,13 +308,14 @@ def test_turn_identity_from_own_slice_not_cluster_cache(monkeypatch):
     assert len(transcripts) == 1
     tr = transcripts[0]
     assert tr["name"] == "alice" and tr["score"] == 0.9, tr
-    # Identify received the turn's OWN slice, overlap-excised.
+    # Identify received the turn's OWN PURE speech: the 0.5s overlap is
+    # dropped (not zeroed), leaving a 2.0s sample-exact concatenation
+    # (docs/bugs/2026-08-05-identity-continuity-overlap-purity.md §4.1).
     assert len(received) == 1
     pcm = received[0]
     sr = 16000
-    assert pcm.size == int(2.5 * sr)
-    assert np.all(pcm[int(0.5 * sr):int(1.0 * sr)] == 0.0), "overlap not excised"
-    assert np.all(pcm[: int(0.5 * sr)] != 0.0)
+    assert pcm.size == int(2.0 * sr)
+    assert np.all(pcm == 0.05), "identity input must contain no zeroed samples"
     # Prediction-stream hint now echoes the turn-verified identity.
     assert session._last_match["speaker0"] == ("alice", 0.9)
 

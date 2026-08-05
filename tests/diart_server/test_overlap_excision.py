@@ -61,7 +61,7 @@ def test_minority_overlap_is_excised():
     pcm = np.full(16000 * 4, 0.05, dtype=np.float32)
     session._overlap_intervals = [(1.0, 1.5)]  # 0.5 / 4.0 = 12.5% minority
 
-    out, overlapped, ratio = session._apply_overlap(pcm, ft)
+    out, overlapped, ratio, identity = session._apply_overlap(pcm, ft)
 
     assert overlapped is False
     assert abs(ratio - 0.125) < 1e-6
@@ -70,6 +70,10 @@ def test_minority_overlap_is_excised():
     assert np.all(out[i0:i1] == 0.0)
     assert np.all(out[:i0] == 0.05)
     assert np.all(out[i1:] == 0.05)
+    # Identity input is the PURE speech only: 3.5s concatenation, no zeros.
+    assert identity is not None
+    assert identity.size == int(16000 * 3.5)
+    assert np.all(identity == 0.05)
 
 
 def test_majority_overlap_left_intact_and_flagged():
@@ -79,11 +83,12 @@ def test_majority_overlap_left_intact_and_flagged():
     original = pcm.copy()
     session._overlap_intervals = [(0.0, 3.0)]  # 3.0 / 4.0 = 75% majority
 
-    out, overlapped, ratio = session._apply_overlap(pcm, ft)
+    out, overlapped, ratio, identity = session._apply_overlap(pcm, ft)
 
     assert overlapped is True
     assert abs(ratio - 0.75) < 1e-6
     assert np.array_equal(out, original)  # no excision
+    assert identity is None  # mixed audio must never be embedded
 
 
 def test_zero_overlap_unchanged():
@@ -93,8 +98,11 @@ def test_zero_overlap_unchanged():
     original = pcm.copy()
     session._overlap_intervals = []
 
-    out, overlapped, ratio = session._apply_overlap(pcm, ft)
+    out, overlapped, ratio, identity = session._apply_overlap(pcm, ft)
 
     assert overlapped is False
     assert ratio == 0.0
     assert np.array_equal(out, original)
+    # Identity input IS the intact slice (same array): the non-overlap
+    # scoring chain stays bit-identical to the pre-fix behaviour.
+    assert identity is out
