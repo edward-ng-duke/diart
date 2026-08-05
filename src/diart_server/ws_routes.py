@@ -21,6 +21,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import ValidationError
 
 from diart_server import audio_decoder, metrics
+from diart_server.cohort import has_cohort
 from diart_server.config import settings
 from diart_server.errors import BadAudioError, ModelNotFoundError, ResampleFailedError
 from diart_server.protocol import QueryParams
@@ -75,6 +76,14 @@ async def info(request: Request) -> dict:
         "models": models,
         "device": settings.device,
         "max_concurrent_sessions": settings.max_concurrent_sessions,
+        # Embedding models with a calibrated cohort mean: only these can do
+        # voiceprint identification under the centered-score threshold
+        # (docs/bugs/2026-08-05-cohort-missing-threshold.md §4.2).
+        "voiceprint_ready": sorted(
+            name
+            for name, spec in registry.specs.items()
+            if spec.kind == "embedding" and has_cohort(name)
+        ),
     }
 
 

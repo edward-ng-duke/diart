@@ -15,6 +15,12 @@ Two scoring modes are supported:
   then remapped to ``[0, 1]`` via ``(c + 1) / 2`` so the returned score sits on a
   usable absolute scale, and the threshold is applied to that remapped score.
 
+A ``mean_embedding`` whose shape does not match the query vector (wrong cohort
+for this embedding space) is treated as absent: the whole call runs the raw
+mode with NO ``(c + 1) / 2`` remap. Remapping a raw cosine would inflate it
+onto the centered scale and turn impostors into false accepts
+(``docs/bugs/2026-08-05-cohort-missing-threshold.md`` §2.2).
+
 In both modes the function returns ``(best_name | None, score)`` with the same
 threshold semantics: a name is returned only when its score is ``>= threshold``.
 """
@@ -70,7 +76,15 @@ def match(
         query and every reference are mean-centered the same way before scoring,
         and the centered cosine is remapped to ``[0, 1]`` via ``(c + 1) / 2``.
         When ``None`` the historical raw-cosine behaviour is preserved exactly.
+        A mean whose shape differs from the query (wrong cohort for this
+        model's space) is discarded up front: the call scores in pure raw mode
+        with no remap, exactly as if ``mean_embedding=None`` had been passed.
     """
+    if mean_embedding is not None:
+        mean = np.asarray(mean_embedding, dtype=np.float32).reshape(-1)
+        q = np.asarray(vec, dtype=np.float32).reshape(-1)
+        if mean.shape != q.shape:
+            mean_embedding = None  # wrong cohort for this space -> raw mode, no remap
     if mean_embedding is None:
         u = _unit(vec)
     else:

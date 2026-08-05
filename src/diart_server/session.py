@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
@@ -38,6 +37,7 @@ from diart.inference import StreamingInference
 from diart.sinks import PredictionAccumulator
 
 from diart_server import metrics
+from diart_server.cohort import _load_cohort_mean
 from diart_server.config import settings
 from diart_server.embedding_extractor import (
     EMBED_EXECUTOR,
@@ -65,40 +65,6 @@ logger = logging.getLogger(__name__)
 # while still making every degraded session visible
 # (docs/bugs/2026-08-05-ring-diart-clock-desync.md §4.2).
 _OVERFLOW_LOG_INTERVAL = 10.0
-
-# Directory holding per-embedding-model cohort/impostor means used to
-# mean-center voiceprint embeddings before cosine matching (see
-# scripts/compute_cohort_mean.py and
-# docs/bugs/2026-06-30-voiceprint-score-compression.md).
-_COHORT_DIR = Path(__file__).resolve().parents[2] / "assets" / "cohort"
-
-
-def _cohort_slug(model_name: str) -> str:
-    """Map an embedding-model name to its cohort-mean filename slug.
-
-    Must stay consistent with ``scripts/compute_cohort_mean.py:model_slug``.
-    """
-    return model_name.replace("/", "__")
-
-
-def _load_cohort_mean(model_name: str) -> Optional[np.ndarray]:
-    """Load the cohort/impostor mean for ``model_name``, or ``None`` if absent.
-
-    Missing or unreadable cohort files are non-fatal: the matcher falls back to
-    raw cosine behaviour when the mean is ``None``.
-    """
-    path = _COHORT_DIR / f"{_cohort_slug(model_name)}.npy"
-    if not path.exists():
-        logger.info("no cohort mean for %s at %s; using raw cosine", model_name, path)
-        return None
-    try:
-        mean = np.load(path).astype(np.float32).reshape(-1)
-    except Exception:  # noqa: BLE001
-        logger.warning("failed to load cohort mean %s; using raw cosine", path)
-        return None
-    if mean.size == 0:
-        return None
-    return mean
 
 
 class DiarizationSession:
@@ -230,10 +196,20 @@ class DiarizationSession:
         # Cohort/impostor mean for this embedding model, loaded once. When
         # present, voiceprint matching mean-centers embeddings before cosine to
         # remove the shared non-discriminative direction (score-compression fix).
-        # ``None`` -> raw-cosine fallback (no crash if the asset is missing).
+        # ``None`` -> per-turn identification is DISABLED for this session:
+        # settings.match_threshold is calibrated for the centered score only,
+        # so raw cosine can mathematically never match under it
+        # (docs/bugs/2026-08-05-cohort-missing-threshold.md).
         self.cohort_mean: Optional[np.ndarray] = _load_cohort_mean(
             params.embedding_model
         )
+        if store is not None and self.cohort_mean is None:
+            logger.warning(
+                "session %s: no cohort mean for embedding model %s; per-turn "
+                "voiceprint identification DISABLED (match_threshold %.2f is "
+                "calibrated for the centered score only)",
+                self.id, params.embedding_model, settings.match_threshold,
+            )
         self.aggregator: TurnAggregator = TurnAggregator(
             settings.silence_gap, settings.max_turn_seconds
         )
@@ -289,6 +265,13 @@ class DiarizationSession:
                 "max_speakers": params.max_speakers,
                 "duration": params.duration,
                 "step": params.step,
+                # Cohort availability for this session's embedding model:
+                # without a cohort mean, per-turn identification is disabled
+                # (docs/bugs/2026-08-05-cohort-missing-threshold.md §4.4).
+                "voiceprint": (
+                    "enabled" if self.cohort_mean is not None
+                    else "disabled_no_cohort"
+                ),
             },
         ).model_dump()
 
@@ -639,6 +622,9 @@ class DiarizationSession:
         ``name=None`` (no centroid fallback, no previous-turn fallback - both
         were the bug). Partials go through the same path, so a growing open
         turn's identity firms up and the final (same turn_id) replaces it.
+        Sessions without a cohort mean skip identification entirely
+        (``name=None``): the match threshold is calibrated for the centered
+        score only (docs/bugs/2026-08-05-cohort-missing-threshold.md).
         """
         assert self._asr_sem is not None
         async with self._asr_sem:
@@ -649,7 +635,11 @@ class DiarizationSession:
             pcm, overlapped, overlap_ratio = self._apply_overlap(pcm, ft)
             name, score = None, None
             dur = ft.end - ft.start
-            if self.store is not None and dur >= settings.min_identify_seconds:
+            if (
+                self.store is not None
+                and self.cohort_mean is not None
+                and dur >= settings.min_identify_seconds
+            ):
                 loop = asyncio.get_running_loop()
                 try:
                     name, score = await loop.run_in_executor(

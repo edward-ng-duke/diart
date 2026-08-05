@@ -44,8 +44,10 @@ const MIC = {channelCount:1, echoCancellation:false, noiseSuppression:false, aut
 async function loadModels(){
   const info = await (await fetch('/v1/info')).json();
   const emb=$('#emb'), seg=$('#seg');
+  const vpReady = Array.isArray(info.voiceprint_ready) ? new Set(info.voiceprint_ready) : null;
   for(const [name,kind] of Object.entries(info.models)){
-    if(name.includes('titanet')) continue; // hidden: needs nemo
+    if(name.includes('titanet')) continue; // hidden: needs nemo (belt-and-braces)
+    if(kind==='embedding' && vpReady && !vpReady.has(name)) continue; // no cohort -> no voiceprint -> hide
     const o=document.createElement('option'); o.value=name; o.textContent=name;
     (kind==='embedding'?emb:seg).appendChild(o);
   }
