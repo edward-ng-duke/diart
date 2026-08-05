@@ -172,5 +172,89 @@ the unconditional transcript emission are untouched.
   7-model dropdown, but such sessions now visibly report
   `voiceprint: disabled_no_cohort` and never pretend to identify.
 
-## Review
-pending
+## Review: PASS (iteration 1)
+
+Independent reviewer re-ran every spec §5 verification on this machine
+(2026-08-05, HEAD 0b4f3c5); nothing was taken on the fixer's word.
+
+### Commands run and numeric results
+
+1. Full unit suite (the ONLY acceptance command):
+
+   ```
+   python -m pytest tests/diart_server -q \
+     --ignore=tests/diart_server/test_e2e_websocket.py \
+     --ignore=tests/diart_server/test_end_control.py \
+     --ignore=tests/diart_server/test_failure_modes.py \
+     -p no:cacheprovider
+   -> 156 passed, 1 skipped in 73.81s   (0 failures)
+   ```
+
+   Baseline cross-check: `--collect-only` in a throwaway worktree at the spec
+   commit d0ea298 collects **150** tests (= 149 passed + 1 skipped baseline);
+   150 + 7 new = 157 collected at HEAD. All previously-passing tests green.
+
+2. `python -m pytest tests/diart_server/test_probes.py -q -p no:cacheprovider`
+   -> **8 passed in 0.26s**, including the pin
+   `voiceprint_ready == ["pyannote/embedding", "pyannote/wespeaker-voxceleb-resnet34-LM"]`
+   (matches `ls assets/cohort/` exactly: 2 `.npy` files).
+
+3. `python -m pytest tests/diart_server/test_voiceprint_matcher.py
+   tests/diart_server/test_session_cohort_disable.py
+   tests/diart_server/test_live_route.py -q -p no:cacheprovider`
+   -> **14 passed in 0.27s** (matcher scale laws incl. the 0.66-impostor pin
+   returning `(None, 0.66)` at 0.82; session disable semantics; live.html
+   static assert).
+
+4. Cross-matrix regression gate (matching math touched -> mandatory):
+
+   ```
+   DIART_MODELS_DIR=./models DIART_DEVICE=cuda DIART_VOICEPRINTS_DIR=./voiceprints \
+     python scripts/verify_speaker_cross_matrix.py
+   -> FALSE_ACCEPTS=0 (of 15 impostor turns)
+      MISSED_GENUINE=0 (of 3 asserted genuine turns)
+      SESSION_ERRORS=0
+      RESULT: PASS   (exit 0; S4: genuine newsA 0.992 accepted,
+                      newsB 0.662 / cross-channel 0.793 rejected — identical
+                      to the a6128f1 baseline matrix)
+   ```
+
+   The script's `from diart_server.session import _load_cohort_mean` still
+   resolves after the §4.1 move (re-exported via session's import) — verified
+   by the run itself.
+
+5. Tests-bite-the-bug check: the new test files copied into a worktree at the
+   pre-fix spec commit d0ea298 -> **6 failed, 16 passed**. All 6 behavioural
+   new tests fail pre-fix (wrong-shape-equals-raw, 0.66-impostor false-accept
+   pin, both session cohort-disable tests, the `/v1/info` pin, the live.html
+   assert); the seventh (`test_correct_shape_mean_matches_manual_centered_remap`)
+   passes pre-fix by design — it pins the unchanged centered path.
+
+### Diff audit vs spec §4 (d0ea298..HEAD)
+
+- §4.1-§4.5 implemented exactly: moved cohort helpers are byte-identical
+  (verified hunk-for-hunk); `has_cohort`, `voiceprint_ready` (sorted,
+  additive — existing `models`-map pin untouched and passing), live.html
+  filter with `null` fallback for older servers, constructor warning
+  (store-gated, names model + threshold), identify gate extended with
+  `self.cohort_mean is not None`, `ready_message` `voiceprint` key keyed on
+  `cohort_mean` alone, matcher up-front shape check clearing
+  `mean_embedding` so a mismatch runs the pure raw path with no remap.
+- Per-turn identity invariants (2026-07-06): intact. The diff only ADDS a
+  conjunct to the existing gate; `_identify_slice`, the fail-closed
+  `try/except`, and the unconditional transcript emission are untouched; the
+  disabled path writes no `_last_match` (pinned `== {}` by test) and stamps
+  no fallback name.
+- Thread-safety: nothing new runs on the inference thread; `cohort_mean` is
+  set once at construction and only read on the event loop; `has_cohort` is
+  a route-side filesystem check.
+- live.html: only `loadModels()` touched (4 lines); the partial->final
+  turn_id-keyed replacement logic is untouched.
+- Acceptable non-spec'd extras: `cohort.py` docstrings/`__all__`, and the
+  `_with_cohort` helper in `test_session_transcript.py` (a necessary
+  consequence of §4.4.2 — those four tests exercise the identify path itself;
+  their assertions are unchanged and the cohort mean is never fed to real
+  matching there since `_identify_slice` is stubbed).
+
+Verdict: **PASS** — spec implemented exactly, all numeric criteria met, no
+invariant regressions found.
