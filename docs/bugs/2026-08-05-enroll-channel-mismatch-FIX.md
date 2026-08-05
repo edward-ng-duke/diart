@@ -167,6 +167,68 @@ the enrolled name >= 0.82 and `n_clips` increments on repeat clips.
 - `ScriptProcessorNode` remains (deprecated); channel identity, not
   modernization, was this fix's principle.
 
-## Review
+## Review: PASS (iteration 1)
 
-pending
+Reviewer: independent reviewer agent, 2026-08-05, at HEAD 273ffc4 (spec commit
+aaaa171). Everything below was re-run/re-derived by the reviewer; nothing was
+taken from §3 on trust.
+
+### Diff audit
+
+- `git diff aaaa171..HEAD --name-only` -> exactly 5 files: the FIX report,
+  `live.html`, `voiceprint_routes.py`, and the two test files. Spec §4
+  implemented as written (MIC constants + single `openMic()` call site,
+  MediaRecorder deleted, raw-PCM native-rate enrollment, `ENROLL_MS = 6000`,
+  `if(enrolling) return;` guard, WS-before-mic with `openMic()` in the
+  `'ready'` handler, selects locked during run/enroll, trim constants +
+  `_trim_silence` + 400 detail string verbatim from §4.2).
+- Invariant files byte-identical since aaaa171:
+  `git diff aaaa171..HEAD -- src/diart_server/embedding_extractor.py
+  src/diart_server/voiceprint_matcher.py src/diart_server/config.py
+  src/diart_server/session.py src/diart_server/protocol.py
+  src/diart_server/ws_routes.py src/diart_server/audio_decoder.py
+  src/diart_server/voiceprint_store.py` -> empty. Per-turn identity chain
+  untouched; no wire-protocol change (`n_clips` already existed in
+  `protocol.py`); `addLine`/`turnLines` partial->final replacement untouched.
+- Trim runs on request-local data in the route handler; `extract` stays on
+  `EMBED_EXECUTOR`; no shared mutable state added.
+
+### Commands re-run and numeric results
+
+1. Acceptance suite at HEAD:
+   `python -m pytest tests/diart_server -q --ignore=tests/diart_server/test_e2e_websocket.py --ignore=tests/diart_server/test_end_control.py --ignore=tests/diart_server/test_failure_modes.py -p no:cacheprovider`
+   -> **149 passed, 1 skipped in 73.89s**, zero failures.
+2. Baseline independently re-measured in a detached worktree at aaaa171 (same
+   command) -> **146 passed, 1 skipped in 73.96s** (the workflow brief's "139"
+   predates the ring-clock commits; fixer's re-measure confirmed). Collected
+   node-ID diff base vs HEAD -> **exactly the 3 spec'd tests added
+   (147 -> 150 collected), 0 removed**; every previously-passing test still
+   green: 149 = 146 + 3 >= the spec's >= 142 criterion.
+3. Cross-matrix gate:
+   `DIART_MODELS_DIR=./models DIART_DEVICE=cuda DIART_VOICEPRINTS_DIR=./voiceprints python scripts/verify_speaker_cross_matrix.py`
+   -> **FALSE_ACCEPTS=0 (of 15), MISSED_GENUINE=0 (of 3), SESSION_ERRORS=0,
+   RESULT: PASS** (newsA genuine 0.992; newsB impostor None @ 0.662;
+   by-design cross-channel genuine None @ 0.793).
+4. Reviewer's own adversarial probes of `_trim_silence` + the route (script in
+   session scratchpad, results recorded here):
+   1 s sil + 2 s tone + 1 s sil @16 k -> **33280 = 2.080 s** in [30400, 35200];
+   4 s all-zero -> None -> HTTP 400 with 说话时间不足, `extract` never called;
+   exact 1.5 s tone -> kept (24000); 1.4 s speech after trim -> rejected;
+   sub-frame 100-sample clip -> None (no crash); amp 5e-4 (peak RMS < 1e-3)
+   -> all-silence rejection, amp 2e-3 -> kept; tone flush at clip start/end ->
+   pad clamped, 2.040 s, no index errors. Route-level at **48 kHz** (path the
+   fixer's 16 k-only tests never exercise): 1 s sil + 2 s tone + 1 s sil ->
+   200 with `extract` receiving 33280 samples @16 k (resample->trim ordering
+   correct); 48 k all-silence -> 400.
+
+### Non-blocking observation (spec gap, recorded for a future iteration)
+
+If Enroll is clicked while a live start's WebSocket is still connecting
+(`running=true`, before `'ready'`) and the socket then errors/closes,
+`failBeforeReady` tears down `audioCtx` and re-enables `#startBtn` while
+`enrolling=true`; when the 6 s timer fires, `encodeWav(f32,
+audioCtx.sampleRate)` throws on the nulled context and the enroll controls
+stay disabled until page reload. Requires a double failure (enroll inside the
+connect window AND a pre-ready WS failure); §4.1.4 was implemented exactly as
+specified — the spec did not design the enroll-during-connect interleaving.
+No invariant, test, or wire-protocol impact; does not block this fix.
