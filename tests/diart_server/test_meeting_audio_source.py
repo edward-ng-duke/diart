@@ -146,3 +146,83 @@ def test_no_overflow_callback_when_unset() -> None:
     # This must not raise even though on_overflow is None.
     src.push_pcm(np.array([2.0], dtype=np.float32))
     src.close()
+
+
+def test_on_frame_called_once_per_consumed_frame_never_for_drops() -> None:
+    """on_frame fires once per CONSUMED frame, in consumption order, with the
+    exact pushed arrays — and never for frames dropped on overflow."""
+    frames_in = [np.full(4, float(i), dtype=np.float32) for i in range(5)]
+    seen: List[np.ndarray] = []
+    src = MeetingAudioSource(uri="t", maxsize=2, on_frame=seen.append)
+
+    # Push all 5 with no reader running: maxsize=2 -> frames 0..2 dropped.
+    for pcm in frames_in:
+        src.push_pcm(pcm)
+
+    # on_frame is a consumer-side callback: nothing fires on the producer side.
+    assert seen == []
+
+    received: List[float] = []
+    src.stream.subscribe(
+        on_next=lambda t: received.append(float(t.squeeze(0)[0].item()))
+    )
+    th = threading.Thread(target=src.read, daemon=True)
+    th.start()
+    src.close()
+    th.join(timeout=1.0)
+    assert not th.is_alive()
+
+    # Only the surviving frames (3, 4), consumption order, sample-exact.
+    assert len(seen) == 2
+    assert np.array_equal(seen[0], frames_in[3])
+    assert np.array_equal(seen[1], frames_in[4])
+    assert received == [3.0, 4.0]
+
+
+def test_on_frame_invoked_before_stream_emission() -> None:
+    """Each on_frame call happens strictly before the matching stream.on_next,
+    so downstream prediction code sees a ring that already holds the frame."""
+    events: List[tuple] = []
+    src = MeetingAudioSource(
+        uri="t", on_frame=lambda pcm: events.append(("frame", float(pcm[0])))
+    )
+    src.stream.subscribe(
+        on_next=lambda t: events.append(("next", float(t.squeeze(0)[0].item())))
+    )
+
+    th = threading.Thread(target=src.read, daemon=True)
+    th.start()
+
+    for i in range(3):
+        src.push_pcm(np.full(4, float(i), dtype=np.float32))
+
+    src.close()
+    th.join(timeout=1.0)
+    assert not th.is_alive()
+
+    assert events == [
+        ("frame", 0.0), ("next", 0.0),
+        ("frame", 1.0), ("next", 1.0),
+        ("frame", 2.0), ("next", 2.0),
+    ]
+
+
+def test_on_frame_default_none_keeps_behaviour() -> None:
+    """on_frame=None (the default) consumes frames normally and never raises."""
+    src = MeetingAudioSource(uri="t")
+    received: List[float] = []
+    src.stream.subscribe(
+        on_next=lambda t: received.append(float(t.squeeze(0)[0].item()))
+    )
+
+    th = threading.Thread(target=src.read, daemon=True)
+    th.start()
+
+    src.push_pcm(np.array([1.0], dtype=np.float32))
+    src.push_pcm(np.array([2.0], dtype=np.float32))
+
+    src.close()
+    th.join(timeout=1.0)
+
+    assert not th.is_alive()
+    assert received == [1.0, 2.0]
