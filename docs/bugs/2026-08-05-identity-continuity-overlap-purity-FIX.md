@@ -158,6 +158,54 @@ exempt-unknown).
 - Splice discontinuities at concatenation boundaries measured harmless
   (0.909 vs 0.903 clean, spec §3.2); no windowing added.
 
-## Review
+## Review: PASS (iteration 1)
 
-pending
+- **Reviewer:** independent reviewer agent (Reporter -> Fixer -> Reviewer loop)
+- **Date:** 2026-08-05
+- **Reviewed range:** c3737c6 (spec) .. 6230e46 (HEAD) — commits 66fd212,
+  a3ce8a0, 7c76ffc, 6230e46; working tree clean; only
+  session.py/protocol.py/live.html, 4 test files and this FIX report changed.
+
+Diff re-derived against spec §4: `_apply_overlap` 4-tuple with the pure
+concatenation built from the same lock-guarded interval snapshot BEFORE
+in-place zeroing (same `round((t-ft.start)*sr)` convention, clamped, empties
+dropped; `np.concatenate` allocates so zeroing cannot alias it); majority ->
+`identity_pcm=None`, identification skipped, no `_last_match` write; gate on
+pure seconds with `min_identify_seconds=2.0` unchanged
+(`match_threshold=0.82`, `overlap_max_ratio=0.5` also unchanged);
+below-threshold results still write `_last_match`; exception path fails
+closed with the transcript emitted. `ratio==0` (and `duration<=0`) return
+the intact ring-slice copy as `identity_pcm` — non-overlap scoring chain
+bit-identical. live.html change is display-only (`lastVerified` Map fed by
+the prediction echo, `≈name?` hint rendered only on nameless lines at render
+time); `TranscriptMessage.name` untouched; turn_id partial->final replacement
+and the late-partial clobber guard intact; no wire-schema change
+(protocol.py docstring only). 2026-07-06 per-turn identity invariants
+preserved (strengthened: pure samples only).
+
+Commands run by the reviewer (all on this machine, post-fix HEAD 6230e46):
+
+1. `python -m pytest tests/diart_server -q --ignore=tests/diart_server/test_e2e_websocket.py --ignore=tests/diart_server/test_end_control.py --ignore=tests/diart_server/test_failure_modes.py -p no:cacheprovider`
+   -> **162 passed, 1 skipped in 73.84s** (baseline 156 passed, 1 skipped;
+   +6 new tests, zero failures).
+2. `python -m pytest tests/diart_server/test_identity_overlap_purity.py tests/diart_server/test_live_route.py tests/diart_server/test_overlap_excision.py tests/diart_server/test_session_transcript.py -v -p no:cacheprovider`
+   -> **21 passed** — all five §5.1(a-e) tests and the §5.2 static-assert
+   test collected and green; adapted files' assertions strengthened, not
+   weakened (verified in the diff).
+3. `DIART_MODELS_DIR=./models DIART_DEVICE=cuda DIART_VOICEPRINTS_DIR=./voiceprints python scripts/verify_speaker_cross_matrix.py`
+   -> **FALSE_ACCEPTS=0 (of 15), MISSED_GENUINE=0 (of 3), SESSION_ERRORS=0,
+   RESULT: PASS, exit 0**; spot values match the pre-fix baseline (newsA
+   genuine 0.992 accepted, newsB impostor 0.662 rejected, cross-channel
+   0.793 exempt-unknown).
+
+Failure-class hunt (no findings): server state is per-session
+(`_last_match`, `_overlap_intervals` pruned to the ring window); interval
+boundary edges are safe (`duration<=0` -> intact-slice identity; empty kept
+list -> `np.empty(0)` -> pure_seconds=0 -> gate skips; shared rounding
+partitions kept/zeroed spans exactly; `ring.slice` returns a fresh copy so
+the shared-array `ratio==0` path is mutation-safe). One noted residual,
+within spec §6's accepted class: the frontend `lastVerified` Map persists
+across stop/start cycles on the same page, so a hint from a previous run can
+show on a fresh session's same-numbered label until re-verified — display-
+only, explicitly uncertain, never enters transcript data (spec §4.3 mandates
+exactly this implementation; flagged for a future spec if undesired).
