@@ -97,3 +97,68 @@ def test_centering_threshold_separates_same_from_different():
     name_diff, _ = match(b, {"A": a1}, threshold=thr, mean_embedding=cohort)
     assert name_same == "A"
     assert name_diff is None
+
+
+# ---------------------------------------------------------------------------
+# Cohort shape validation (2026-08-05 cohort-missing-threshold fix §4.5): a
+# mean whose shape does not match the query is discarded UP FRONT, so the call
+# runs the exact historical raw path — no centering, no (c+1)/2 remap. The
+# remap of a raw cosine inflated impostors onto the centered scale (§2.2).
+# ---------------------------------------------------------------------------
+
+
+def test_wrong_shape_mean_equals_raw_mode_exactly():
+    """Wrong-shape mean == mean_embedding=None, float-for-float."""
+    rng = np.random.default_rng(20260805)
+    dim = 32
+    vec = rng.standard_normal(dim).astype(np.float32)
+    refs = {
+        "甲": rng.standard_normal(dim).astype(np.float32),
+        "乙": rng.standard_normal(dim).astype(np.float32),
+        "丙": rng.standard_normal(dim).astype(np.float32),
+    }
+    wrong = np.zeros(dim + 7, dtype=np.float32)
+    for thr in (0.0, 0.82):
+        assert match(vec, refs, thr, mean_embedding=wrong) == match(
+            vec, refs, thr, mean_embedding=None
+        )
+
+
+def test_correct_shape_mean_matches_manual_centered_remap():
+    """With a correct-shape mean every candidate score is the manual
+    (cos(unit(unit(v)-m), unit(unit(r)-m)) + 1) / 2 in [0, 1], and the
+    returned score equals the best manual score within 1e-6."""
+    rng = np.random.default_rng(7)
+    dim = 24
+    vec = rng.standard_normal(dim).astype(np.float32)
+    refs = {f"spk{i}": rng.standard_normal(dim).astype(np.float32) for i in range(4)}
+    mean = rng.standard_normal(dim).astype(np.float32)
+    mean /= np.linalg.norm(mean)
+
+    def _u(v):
+        v = np.asarray(v, dtype=np.float32).reshape(-1)
+        return v / float(np.linalg.norm(v))
+
+    def _manual(v, r):
+        c = float(np.dot(_u(_u(v) - mean), _u(_u(r) - mean)))
+        return (c + 1.0) / 2.0
+
+    manual = {name: _manual(vec, r) for name, r in refs.items()}
+    assert all(0.0 <= s <= 1.0 for s in manual.values()), manual
+    name, score = match(vec, refs, threshold=-1.0, mean_embedding=mean)
+    best = max(manual, key=manual.get)
+    assert name == best
+    assert abs(score - manual[best]) <= 1e-6
+    assert 0.0 <= score <= 1.0
+
+
+def test_wrong_shape_mean_impostor_at_raw_066_is_rejected():
+    """Regression pin (spec §3 fact 3): pre-fix, a wrong-shape mean remapped
+    the RAW cosine — an impostor at raw 0.66 scored (0.66+1)/2 = 0.83 >= 0.82
+    (false accept). Post-fix the call is pure raw mode: 0.66 < 0.82 -> None."""
+    q = np.array([1.0, 0.0], dtype=np.float32)
+    r = np.array([0.66, float(np.sqrt(1.0 - 0.66 ** 2))], dtype=np.float32)
+    wrong = np.zeros(9, dtype=np.float32)
+    name, score = match(q, {"impostor": r}, threshold=0.82, mean_embedding=wrong)
+    assert name is None
+    assert abs(score - 0.66) <= 1e-6

@@ -257,11 +257,24 @@ def _fake_asr(monkeypatch, text="文本"):
     monkeypatch.setattr(AsrClient, "transcribe", fake_transcribe)
 
 
+def _with_cohort(monkeypatch):
+    """Give dummy/emb a cohort mean so per-turn identification stays enabled.
+
+    Cohort-less sessions skip identification entirely
+    (docs/bugs/2026-08-05-cohort-missing-threshold.md §4.4); these tests
+    exercise the identify path itself, so they need a cohort present.
+    """
+    unit = np.zeros(8, dtype=np.float32)
+    unit[0] = 1.0
+    monkeypatch.setattr("diart_server.session._load_cohort_mean", lambda name: unit)
+
+
 def test_turn_identity_from_own_slice_not_cluster_cache(monkeypatch):
     """A >= min_identify_seconds turn is identified from its own excised slice;
     a stale _last_match (the old cluster-label identity) is ignored, and the
     verified identity is written back for the prediction-stream hint."""
     _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)
     loop, t = _spin_loop()
     messages, lock = [], threading.Lock()
 
@@ -308,6 +321,7 @@ def test_short_turn_gets_no_name_even_with_cached_match(monkeypatch):
     """A turn below min_identify_seconds emits name=None/score=None - no
     centroid fallback, no previous-turn fallback (both were the bug)."""
     _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)  # so the DURATION gate (not the cohort gate) is tested
     loop, t = _spin_loop()
     messages, lock = [], threading.Lock()
 
@@ -338,6 +352,7 @@ def test_identify_failure_fails_closed_but_emits_transcript(monkeypatch):
     """An exception inside identification yields (None, None) and the
     transcript is still emitted (identity must never block ASR output)."""
     _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)  # identification must actually RUN (and blow up)
     loop, t = _spin_loop()
     messages, lock = [], threading.Lock()
 
@@ -370,6 +385,7 @@ def test_absorbed_fragment_reidentifies_merged_span(monkeypatch):
     """BUG3 absorption re-emits the merged turn through _transcribe_and_emit,
     which must re-identify the MERGED slice (>=2s rule on merged duration)."""
     _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)
     loop, t = _spin_loop()
     messages, lock = [], threading.Lock()
 

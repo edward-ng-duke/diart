@@ -25,3 +25,13 @@ def test_live_page_enrollment_channel_static_asserts():
     assert "const ENROLL_MS = 6000;" in r.text
     assert "if(enrolling) return;" in r.text  # pause-during-enroll guard
     assert "n_clips" in r.text  # multi-clip feedback surfaced in the UI
+
+
+def test_live_page_dropdown_references_voiceprint_ready():
+    """Cohort-missing fix (docs/bugs/2026-08-05-cohort-missing-threshold.md
+    §4.3): the embedding dropdown must be filtered on /v1/info's
+    voiceprint_ready field so cohort-less models are hidden."""
+    client = TestClient(create_app())
+    r = client.get("/demo/live")
+    assert r.status_code == 200
+    assert "voiceprint_ready" in r.text

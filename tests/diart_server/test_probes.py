@@ -108,6 +108,22 @@ def test_v1_info_returns_expected_shape():
     assert body["models"]["pyannote/embedding"] == "embedding"
 
 
+def test_v1_info_voiceprint_ready_lists_cohort_backed_models():
+    """Only embedding models with a cohort .npy are voiceprint-ready
+    (docs/bugs/2026-08-05-cohort-missing-threshold.md §4.2): the match
+    threshold is calibrated for the mean-centered score, so cohort-less
+    models must be advertised as unable to identify. Dev layout ships
+    exactly two cohort files; the field is sorted by construction."""
+    with TestClient(app) as client:
+        response = client.get("/v1/info")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["voiceprint_ready"] == [
+        "pyannote/embedding",
+        "pyannote/wespeaker-voxceleb-resnet34-LM",
+    ]
+
+
 def test_metrics_exposes_prometheus_payload():
     with TestClient(app) as client:
         response = client.get("/metrics")
