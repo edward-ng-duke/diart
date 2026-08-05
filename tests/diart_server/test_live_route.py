@@ -27,6 +27,20 @@ def test_live_page_enrollment_channel_static_asserts():
     assert "n_clips" in r.text  # multi-clip feedback surfaced in the UI
 
 
+def test_live_page_identity_continuity_hint_static_asserts():
+    """Identity-continuity hint (docs/bugs/2026-08-05-identity-continuity-
+    overlap-purity.md §4.3): the page must consume the prediction-stream
+    identity echo and render nameless lines with an explicitly-uncertain
+    ≈name? hint (display-only; the server stamps nothing it did not verify)."""
+    client = TestClient(create_app())
+    r = client.get("/demo/live")
+    assert r.status_code == 200
+    assert "type==='prediction'" in r.text
+    assert ".hint{" in r.text
+    assert "≈" in r.text
+    assert "lastVerified" in r.text
+
+
 def test_live_page_dropdown_references_voiceprint_ready():
     """Cohort-missing fix (docs/bugs/2026-08-05-cohort-missing-threshold.md
     §4.3): the embedding dropdown must be filtered on /v1/info's
