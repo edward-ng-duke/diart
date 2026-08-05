@@ -59,6 +59,13 @@ from diart_server.voiceprint_matcher import match as vp_match
 
 logger = logging.getLogger(__name__)
 
+# Minimum seconds between queue-overflow warning lines per session. Drops
+# arrive per-frame (~6/s at 170 ms frames), so sustained RTF > 1 would
+# otherwise log ~6 lines/s; once per 10 s bounds log volume at 0.1 lines/s
+# while still making every degraded session visible
+# (docs/bugs/2026-08-05-ring-diart-clock-desync.md §4.2).
+_OVERFLOW_LOG_INTERVAL = 10.0
+
 # Directory holding per-embedding-model cohort/impostor means used to
 # mean-center voiceprint embeddings before cosine matching (see
 # scripts/compute_cohort_mean.py and
@@ -157,13 +164,28 @@ class DiarizationSession:
         )
         self.pipeline: SpeakerDiarization = SpeakerDiarization(diart_config)
 
+        # Rolling PCM buffer sliced by _handle_turn/_transcribe_and_emit.
+        # Fed from the CONSUMER side (MeetingAudioSource.read via on_frame),
+        # never from push_pcm: a frame enters the ring iff diart consumes it,
+        # so ring.total_seconds ticks diart's consumed-samples clock and
+        # frames dropped on queue overflow reach NEITHER diart NOR the ring —
+        # both timelines share the same splice and stay aligned by
+        # construction (docs/bugs/2026-08-05-ring-diart-clock-desync.md).
+        self.ring: PcmRingBuffer = PcmRingBuffer(
+            settings.ring_buffer_seconds, sample_rate=16000
+        )
+
         # Threaded audio source bridging the websocket producer and the
-        # diart consumer. Overflows bump a Prometheus counter so we can
-        # observe backpressure events without coupling the source to the
-        # metrics module.
+        # diart consumer. Each consumed frame is appended to the ring before
+        # it is emitted to the pipeline (see MeetingAudioSource.read).
+        # Overflows bump a Prometheus counter and a rate-limited warning via
+        # _on_queue_overflow so backpressure events are observable.
+        self._overflow_count: int = 0
+        self._last_overflow_log: Optional[float] = None
         self.source: MeetingAudioSource = MeetingAudioSource(
             uri=self.id,
-            on_overflow=lambda: metrics.queue_overflow_total.inc(),
+            on_overflow=self._on_queue_overflow,
+            on_frame=self.ring.append,
         )
 
         # Streaming inference orchestrator. ``do_plot`` and
@@ -211,9 +233,6 @@ class DiarizationSession:
         # ``None`` -> raw-cosine fallback (no crash if the asset is missing).
         self.cohort_mean: Optional[np.ndarray] = _load_cohort_mean(
             params.embedding_model
-        )
-        self.ring: PcmRingBuffer = PcmRingBuffer(
-            settings.ring_buffer_seconds, sample_rate=16000
         )
         self.aggregator: TurnAggregator = TurnAggregator(
             settings.silence_gap, settings.max_turn_seconds
@@ -293,15 +312,41 @@ class DiarizationSession:
     def push_pcm(self, pcm: np.ndarray) -> None:
         """Forward a decoded PCM frame to the audio source.
 
-        Also increments the bytes-received counter so backpressure and
-        throughput are observable from Prometheus, and stamps
-        ``_last_push_at`` so :meth:`_on_prediction` can compute the
-        end-to-end latency histogram (T28).
+        The ring buffer is deliberately NOT fed here: it is appended on the
+        consumer side (``MeetingAudioSource.read`` via
+        ``on_frame=self.ring.append``) so its clock matches diart's
+        consumed-samples timeline even when queue overflow drops frames
+        (docs/bugs/2026-08-05-ring-diart-clock-desync.md). The
+        bytes-received counter and ``_last_push_at`` stay here — they
+        intentionally measure the producer side (T28 latency histogram).
         """
         self.source.push_pcm(pcm)
-        self.ring.append(pcm)
         metrics.audio_bytes_received.inc(pcm.nbytes)
         self._last_push_at = time.monotonic()
+
+    def _on_queue_overflow(self) -> None:
+        """Record one dropped audio frame (source queue overflow).
+
+        Runs on the asyncio loop inside :meth:`push_pcm`, so it must stay
+        cheap: a counter bump, a clock read, and — at most once per
+        ``_OVERFLOW_LOG_INTERVAL`` seconds — a warning so degraded sessions
+        (inference slower than real time) are visible in logs instead of
+        only in the ``queue_overflow_total`` Prometheus counter.
+        """
+        metrics.queue_overflow_total.inc()
+        self._overflow_count += 1
+        now = time.monotonic()
+        if (
+            self._last_overflow_log is None
+            or now - self._last_overflow_log >= _OVERFLOW_LOG_INTERVAL
+        ):
+            self._last_overflow_log = now
+            logger.warning(
+                "session %s: audio queue overflow, %d frames dropped so "
+                "far (inference slower than real time)",
+                self.id,
+                self._overflow_count,
+            )
 
     async def close(self) -> dict:
         """Stop the inference thread and emit a final summary message.
@@ -328,6 +373,10 @@ class DiarizationSession:
         # as the concurrent.futures.Futures returned by run_coroutine_threadsafe,
         # registered at dispatch time so none is missed (the inference thread is
         # already joined above, so no new ones can appear).
+        # ring.total_seconds is the consumer clock and the ring is complete
+        # here: the join above waited for read() to drain every queued frame
+        # (each appended via on_frame) before the sentinel, so the flush "now"
+        # sits on the same timeline as the aggregator's turn coordinates.
         flush_tasks = [
             asyncio.create_task(self._handle_turn(ft))
             for ft in self.aggregator.flush(self.ring.total_seconds)
@@ -439,7 +488,9 @@ class DiarizationSession:
                 pipeline=self.params.pipeline,
                 model=self.params.embedding_model,
             ).inc()
-            # Aggregate speaker turn and dispatch ASR for any finalized turns
+            # Aggregate speaker turn and dispatch ASR for any finalized turns.
+            # ring.total_seconds is the CONSUMER clock (ring fed via on_frame),
+            # i.e. the same timeline as turn.start/end — no drop-induced skew.
             now = self.ring.total_seconds
             for ft in self.aggregator.feed(
                 speaker, turn.start, turn.start + turn.duration, now

@@ -46,6 +46,15 @@ class MeetingAudioSource(AudioSource):
         Optional callback invoked (with no arguments) every time a frame
         is dropped due to queue saturation. Kept as a callback so this
         class stays decoupled from any metrics implementation.
+    on_frame:
+        Optional callback invoked (with the raw numpy frame) from
+        :meth:`read` for every CONSUMED frame, immediately before it is
+        emitted on ``self.stream``. Frames dropped on overflow never reach
+        it, so a consumer-side accumulator (e.g. a PCM ring buffer) fed
+        through this callback ticks the same consumed-samples clock as the
+        diart pipeline (docs/bugs/2026-08-05-ring-diart-clock-desync.md).
+        Kept as a generic callback so this class stays decoupled from the
+        ring implementation.
     """
 
     def __init__(
@@ -54,11 +63,13 @@ class MeetingAudioSource(AudioSource):
         sample_rate: int = 16000,
         maxsize: int = 50,
         on_overflow: Optional[Callable[[], None]] = None,
+        on_frame: Optional[Callable[[np.ndarray], None]] = None,
     ) -> None:
         super().__init__(uri, sample_rate)
         self._queue: "queue.Queue[Optional[np.ndarray]]" = queue.Queue(maxsize=maxsize)
         self._closed = threading.Event()
         self._on_overflow = on_overflow
+        self._on_frame = on_frame
 
     def push_pcm(self, pcm: np.ndarray) -> None:
         """Enqueue a PCM frame for the consumer thread.
@@ -97,6 +108,14 @@ class MeetingAudioSource(AudioSource):
         ``torch.Tensor`` of shape ``(1, samples)``. Exits when a sentinel
         ``None`` is received (pushed by :meth:`close`) and signals
         completion via ``self.stream.on_completed()``.
+
+        ``on_frame`` (if set) is invoked for each dequeued frame BEFORE
+        ``stream.on_next``: prediction-side code runs downstream of
+        ``on_next`` on this same thread, so any consumer-clock accumulator
+        must already contain the frame when it is read there. It is
+        deliberately not wrapped in try/except: if it ever raises, the
+        ``finally`` below terminates the loop loudly rather than silently
+        desyncing the consumer clock.
         """
         try:
             while True:
@@ -104,6 +123,8 @@ class MeetingAudioSource(AudioSource):
                 if pcm is None:
                     break
                 tensor = torch.from_numpy(pcm).unsqueeze(0)
+                if self._on_frame is not None:
+                    self._on_frame(pcm)
                 self.stream.on_next(tensor)
         finally:
             self.stream.on_completed()
