@@ -189,6 +189,38 @@ turn's audio even after queue overflow.
   NumPy 2.5; the gate script self-heals via soxr, but other librosa users
   in scripts/ would hit the same wall until numba/numpy are reconciled.
 
-## Review
+## Review: PASS (iteration 1)
 
-pending
+Independent reviewer re-ran every verification command at HEAD 70c6766 on
+2026-08-05 (all numbers re-derived, not copied from §2):
+
+1. **Repro flips (spec §5.1):**
+   `python /tmp/claude-1000/-home-edward-research-diart/6fa6a523-2deb-44f0-9b8b-14031b757d63/scratchpad/repro_clock_desync_fixed.py`
+   -> exit 0; 40 pushed / 30 dropped / 10 consumed; `ring.total_seconds =
+   1.7063 s == diart clock 1.7063 s`, desync **0.0000 s** (pre-fix
+   5.1188 s), window [0.000, 0.171) slices back samples 81900..84629
+   (pre-fix 0..2729), all 10 consumer-timeline windows sample-exact.
+2. **Unit suite (the ONLY acceptance command):**
+   `python -m pytest tests/diart_server -q --ignore=tests/diart_server/test_e2e_websocket.py --ignore=tests/diart_server/test_end_control.py --ignore=tests/diart_server/test_failure_modes.py -p no:cacheprovider`
+   -> **146 passed, 1 skipped in 74.19 s** (baseline 139 + 7 new, zero
+   failures; the 7 new tests collected and verified individually:
+   3 in test_meeting_audio_source.py + 4 in test_ring_clock_alignment.py,
+   14 passed in 0.22 s when run alone).
+3. **Identity/matching regression gate:**
+   `DIART_MODELS_DIR=./models DIART_DEVICE=cuda DIART_VOICEPRINTS_DIR=./voiceprints python scripts/verify_speaker_cross_matrix.py`
+   -> **FALSE_ACCEPTS=0 (of 15 impostor turns), MISSED_GENUINE=0 (of 3),
+   SESSION_ERRORS=0, RESULT: PASS, exit 0.**
+4. **Invariant re-check (code review of 856c9ad..HEAD):** identity code
+   (`_identify_slice`, `_transcribe_and_emit`, `voiceprint_matcher`,
+   `_last_match` discipline) byte-untouched — only a comment references it;
+   ring/overflow counters are per-session (no stale cross-session state);
+   `PcmRingBuffer.append` is lock-protected so the inference-thread append
+   is safe; `on_frame` fires before `on_next` (pinned by test); `close()`
+   joins the inference thread before the flush so the ring is complete;
+   protocol and live.html untouched (wire additivity + turn_id keying
+   unaffected). The out-of-spec `scripts/verify_speaker_cross_matrix.py`
+   soxr fallback was independently validated: `librosa.resample` raises
+   ImportError lazily under this machine's numpy 2.5 (numba cap), the
+   try/except wraps import AND call, and librosa 0.11's default
+   `res_type="soxr_hq"` delegates to soxr — the gate is unblocked, not
+   weakened.
