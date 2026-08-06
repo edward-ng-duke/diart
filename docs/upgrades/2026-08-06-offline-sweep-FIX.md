@@ -218,6 +218,155 @@ DIART_EVAL_CACHE=<dir>. (缓存不存在，请指定 --cache-dir)     # exit 2
 | `141c780` | `test(diart_server): pin offline_sweep estimators, gate and exit codes` |
 | (this file) | `docs(upgrades): FIX report for offline-sweep` |
 
-## Review
+## Review: PASS (iteration 1)
 
-pending
+Reviewer: independent reviewer agent, 2026-08-06. Every number below was
+re-derived by the reviewer, not read off the Fixer's report.
+
+### R1. Blast radius — three new files, nothing else
+
+```
+$ git diff --name-status fe6314c..e7b774a
+A  docs/upgrades/2026-08-06-offline-sweep-FIX.md
+A  scripts/eval/offline_sweep.py
+A  tests/diart_server/test_offline_sweep.py
+```
+No `src/**` change, no `live.html` change (so T1's `turn_id`-keyed
+partial→final replacement is untouched), no existing test modified or deleted
+(all three entries are `A`). The script imports only `argparse/json/math/os/
+sys/time/dataclasses/pathlib/numpy` — no torch, no onnx, no `diart_server`
+import, i.e. **zero forward passes** is structurally guaranteed, not just
+claimed. Invariants 1–7 are not reachable from this change (no server code, no
+protocol field, no threading, single process).
+
+### R2. Acceptance gate — re-run by the reviewer
+
+```
+$ python -m pytest tests/diart_server -q \
+    --ignore=tests/diart_server/test_e2e_websocket.py \
+    --ignore=tests/diart_server/test_end_control.py \
+    --ignore=tests/diart_server/test_failure_modes.py -p no:cacheprovider
+195 passed, 1 skipped, 188 warnings in 74.19s      # 0 failed
+
+$ ... same command + --ignore=tests/diart_server/test_offline_sweep.py
+168 passed, 1 skipped                              # pre-T5 baseline confirmed
+```
+168 + 27 = 195. The brief's `167` predates T1's pinning test (`78e91e1`); the
+Fixer's accounting is correct. All 27 new tests collected and named:
+
+```
+$ python -m pytest tests/diart_server/test_offline_sweep.py -q -p no:cacheprovider
+27 passed, 4 warnings in 0.16s
+```
+
+Voiceprint regression gate (run for insurance; this task touches no scoring
+code):
+```
+$ DIART_MODELS_DIR=./models DIART_DEVICE=cuda DIART_VOICEPRINTS_DIR=./voiceprints \
+    python scripts/verify_speaker_cross_matrix.py
+FALSE_ACCEPTS=0 (of 15 impostor turns)
+MISSED_GENUINE=0 (of 3 asserted genuine turns)
+SESSION_ERRORS=0 / RESULT: PASS / EXIT=0
+```
+
+### R3. Independent re-derivation of the estimators (the load-bearing check)
+
+The reviewer wrote a **separate** implementation from the definitions —
+open-set DIR@FAR, the thr@FAR order statistic, a closed-form OLS log2 fit (not
+`lstsq`), and a pure-python restatement of the sticky hi/lo + 2-of-5 +
+contested rule — and compared it cell-by-cell against the script's JSON:
+
+```
+$ python scripts/eval/offline_sweep.py --cache-dir <asnorm_cache> --json sweep.json
+$ python xcheck.py sweep.json          # reviewer's independent script
+OK  eres2netv2-zh  centered 2s N=5   DIR 75.47±11.91  thr 0.787114  realizedFAR=0.985%
+OK  eres2netv2-zh  centered 2s N=10  DIR 72.18±10.19  thr 0.799220  realizedFAR=0.944%
+OK  eres2netv2-zh  centered 2s N=20  DIR 69.74± 7.01  thr 0.805295  realizedFAR=0.997%
+OK  eres2netv2-zh  centered 2s N=50  DIR 63.62± 3.73  thr 0.818031  realizedFAR=0.945%
+OK  fit eres2netv2-zh/centered/2s: a=0.788177 b=+0.009008 r2=0.9878
+OK  campplus-zh    centered 2s N=20  DIR 61.23± 6.32  thr 0.821758
+OK  fit campplus-zh/centered/2s:    a=0.802088 b=+0.009243 r2=0.9961
+OK  cnceleb-r34    centered full:    a=0.792341 b=+0.009348 r2=0.9932
+OK  leak eres2netv2-zh N=5/10/20/50 n-aware  leakEver 0.267/0.133/0.200/0.000%  (1500 clusters each)
+OK  leak eres2netv2-zh N=20/50 FIXED lo=0.82 leakEver 0.867% / 2.000%
+OK  leak campplus-zh   N=20/50 FIXED lo=0.82 leakEver 2.533% / 6.067%
+ALL MATCH        # 16 DIR cells + 4 fits + 12 leakage cells, agreement < 1e-9
+```
+The **realized** FAR on the chosen threshold is 0.94–1.00% in every draw set,
+i.e. `threshold_at_far` really spends the 1% budget and never overspends it —
+the `floor(far·n)`-th-largest convention is correct, not off by one.
+
+### R4. Score-scale parity against the production matcher, on the REAL cache
+
+A silent scale drift here would poison every printed threshold, so the
+reviewer checked it outside the synthetic-cache test, against
+`voiceprint_matcher.match` on 40 real queries × 196 references:
+```
+max|Δ| centered = 1.79e-07, raw = 2.98e-07; argmax identical in all 80 calls
+centered range [0.4706, 0.9578]   raw range [-0.3012, 0.8838]
+```
+Raw stays a plain cosine (goes negative — no `(c+1)/2`), centered carries the
+production remap. Matches `voiceprint_matcher.py:88-106` exactly.
+
+### R5. Reproducibility, filter-invariance, and clean exit
+
+```
+$ ... --models eres2netv2-zh --crops 2 --n-values 5,20 --json sub.json
+filter-invariance: compared 10 shared cells; mismatches: NONE
+$ ... --json again.json   # rerun of the full grid
+dir_at_far / threshold_fit / k_accumulation / leakage: all identical
+$ python scripts/eval/offline_sweep.py                       # no cache anywhere
+ERROR: embedding cache not specified: ... (缓存不存在，请指定 --cache-dir)   exit=2
+$ python scripts/eval/offline_sweep.py --cache-dir /nope/nope
+ERROR: embedding cache directory not found: /nope/nope ...                 exit=2
+```
+Full grid: **`done in 1.42s`** — brief's budget was 10s.
+
+### R6. Report claims spot-checked against the JSON
+
+| Claim in §3 | Reviewer's recomputation | Verdict |
+|---|---|---|
+| eres2netv2 > campplus in 24/24 conditions, +5.9…+9.0pp | 24/24, `+5.9…+9.0` | ✅ |
+| eres2netv2 > cnceleb-r34 by +10.5…+16.1pp | 24/24, `+10.5…+16.1` | ✅ |
+| centered − raw is noise, −1.8…+3.5pp | `−1.8…+3.5` | ✅ |
+| N=20/2s/centered = 69.7 / 61.2 / 55.8 | 69.74 / 61.23 / 55.81 | ✅ |
+| cohort shares 194 of 196 speakers with the gallery | `overlap = 194`, 764 clips, 196 enroll, 4689 test keys | ✅ |
+| §6.3 R2 (≥3pp lead at ≥3 gallery sizes) satisfied | centered/2s lead `+5.9 +7.0 +8.5 +9.0` at N=5/10/20/50 | ✅ |
+
+### R7. Contract conformance (plan §4 T5 + §6.2)
+
+Four tables present and correct; the unregistered-cluster leakage column is
+there and gated at ≤1%; zero new forward passes; well under the 10s budget;
+and the §6.2 "不做" list is genuinely not done — no `trials_hash`, no
+`eval_metrics.py`, no speaker-block bootstrap, no `gate.py`, no DET curve, no
+gender/genre stratification. Dispersion is honestly labelled as std across
+gallery draws in both the footer and §6.4.5.
+
+### R8. Non-blocking observations (no action required)
+
+1. **Degenerate CLI inputs traceback instead of exiting 2**: `--draws 0`,
+   `--draws -3` (`ValueError: need at least one array to concatenate`),
+   `--far 2.0` (`IndexError` in `threshold_at_far`), `--seed -1`
+   (`ValueError: expected non-negative integer`). The brief's requirement was a
+   clean exit when the **cache** is missing/unusable, and that path is solid
+   (7 tests, all exit 2). These are operator-typo cases on a single-user
+   offline tool; hardening them is not worth a commit.
+2. **`GATE FAIL` prints but the exit code stays 0.** Correct as built: all 5
+   failing rows are the `fixed`-threshold counterfactual (campplus N=10/20/50,
+   cnceleb N=50, eres2netv2 N=50), while **every shipped `n-aware` row passes**
+   (eres2netv2 0.0–0.3%, campplus 0.3–0.9%, cnceleb 0.1–0.2%). A nonzero exit
+   would be permanently red for the wrong reason, and plan §7 explicitly cuts
+   the CI numerical gate (P0-7 / G4).
+3. `run_cluster` is T5's *model* of the not-yet-shipped T4 rule. Nothing can
+   diverge today (T5 and T2–T4 are declared parallel in plan §4); whoever lands
+   T4 should mirror `run_cluster`'s hi / 2-of-5 / contested-lock / backfill
+   semantics, and `test_vote_fires_mirrors_the_run_cluster_vote_branch` is the
+   anchor to check it against.
+4. Deviation §5.4 (leaving `verify_speaker_cross_matrix.py`'s `return 3`
+   untouched) is accepted: the brief called that fix optional ("顺手"), and the
+   script exits 0 today so nothing is being masked.
+
+**Verdict: PASS.** The estimators are correct under independent re-derivation,
+the score scale matches production to float32 precision, the acceptance gate is
+green with 27 named new tests and no test removed, and the deliverable is a
+1.4-second re-runnable command as specified.
