@@ -203,6 +203,13 @@ class DiarizationSession:
         self.cohort_mean: Optional[np.ndarray] = _load_cohort_mean(
             params.embedding_model
         )
+        # Per-model confirmed-name threshold: the centered-score scale differs
+        # per embedding space, so the manifest may override the global default
+        # (ModelSpec.match_threshold; None -> settings.match_threshold).
+        spec = getattr(registry, "specs", {}).get(params.embedding_model)
+        self.match_threshold: float = (
+            getattr(spec, "match_threshold", None) or settings.match_threshold
+        )
         if store is not None and self.cohort_mean is None:
             logger.warning(
                 "session %s: no cohort mean for embedding model %s; per-turn "
@@ -707,7 +714,7 @@ class DiarizationSession:
                         if (
                             cand_name is not None
                             and cand_score is not None
-                            and cand_score >= settings.match_threshold
+                            and cand_score >= self.match_threshold
                         ):
                             name, score = cand_name, cand_score
                         else:

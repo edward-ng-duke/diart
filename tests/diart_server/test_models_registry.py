@@ -161,3 +161,39 @@ def test_warm_up_loads_defaults_on_device():
     fake_seg.eval.assert_called_once()
     fake_emb.to.assert_called_once_with(device)
     fake_emb.eval.assert_called_once()
+
+
+def test_wespeaker_onnx_entry_carries_match_threshold():
+    """The cnceleb entry declares a per-model threshold (its centered-score
+    scale sits higher than the voxceleb models'); entries without the field
+    default to None -> settings.match_threshold applies."""
+    reg = _make_registry()
+    spec = reg.specs["wespeaker/cnceleb-resnet34-LM"]
+    assert spec.backend == "wespeaker_onnx"
+    assert spec.match_threshold == 0.85
+    assert reg.specs["pyannote/embedding"].match_threshold is None
+
+
+def test_wespeaker_onnx_dispatch_builds_lazy_wrapper():
+    """wespeaker_onnx wraps the pyannote fbank-ONNX wrapper in a LAZY
+    EmbeddingModel: construction must not instantiate the wrapper (no ORT
+    session at registry time); first load() must pass the resolved path."""
+    reg = _make_registry()
+    fake_cls = MagicMock(name="wespeaker-wrapper-cls")
+    with patch(
+        "pyannote.audio.pipelines.speaker_verification"
+        ".ONNXWeSpeakerPretrainedSpeakerEmbedding",
+        fake_cls,
+    ), patch(
+        "diart_server.models_registry.EmbeddingModel.from_onnx"
+    ) as onnx_loader, patch(
+        "diart_server.models_registry.EmbeddingModel.from_pyannote"
+    ) as pyannote_loader:
+        model = reg.get_embedding("wespeaker/cnceleb-resnet34-LM")
+        fake_cls.assert_not_called()  # lazy: nothing loaded yet
+        model.load()
+    fake_cls.assert_called_once_with(
+        str(DUMMY_DIR / "wespeaker/cnceleb-resnet34-LM/speaker-embedding.onnx")
+    )
+    onnx_loader.assert_not_called()
+    pyannote_loader.assert_not_called()

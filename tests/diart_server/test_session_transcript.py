@@ -498,3 +498,67 @@ def test_make_embedder_default_device_follows_settings(monkeypatch):
     monkeypatch.setattr(ee.settings, "device", "meta")
     ee.make_embedder("any/model", Reg(model))
     assert model.to_calls == [torch.device("meta")], model.to_calls
+
+
+def test_per_model_match_threshold_overrides_global(monkeypatch):
+    """A registry spec carrying match_threshold overrides settings.match_threshold
+    for the confirmed-name gate (per-model score scales; models_registry)."""
+    from types import SimpleNamespace
+
+    _fake_asr(monkeypatch)
+    _with_cohort(monkeypatch)
+    loop, t = _spin_loop()
+    messages, lock = [], threading.Lock()
+
+    async def on_message(msg):
+        with lock:
+            messages.append(msg)
+
+    session = _make_session(loop, on_message, store=_FakeStore())
+    # Simulate a manifest threshold of 0.9 for dummy/emb: a 0.83 full-length
+    # match (>= global 0.82) must NOT be stamped under the stricter override.
+    session.match_threshold = 0.9
+    session._identify_slice = lambda pcm: ("alice", 0.83)
+    try:
+        session._asr_sem = asyncio.Semaphore(2)
+        session.ring.append(np.full(16000 * 3, 0.05, dtype=np.float32))
+        _run_handle_turn(session, FinalizedTurn("speaker0", 0.0, 2.5, "TID-PM"), loop)
+    finally:
+        _stop_loop(loop, t)
+
+    with lock:
+        transcripts = [m for m in messages if m.get("type") == "transcript"]
+    assert len(transcripts) == 1
+    tr = transcripts[0]
+    assert tr["name"] is None and tr["score"] == 0.83  # below the 0.9 override
+    assert tr["cand_name"] == "alice" and tr["cand_score"] == 0.83
+    assert session._last_match["speaker0"] == (None, 0.83)
+
+
+def test_match_threshold_resolves_from_registry_spec():
+    """Session construction reads ModelSpec.match_threshold when the registry
+    exposes specs; falls back to settings.match_threshold otherwise."""
+    from types import SimpleNamespace
+
+    loop, t = _spin_loop()
+    try:
+        async def on_message(msg):  # noqa: ARG001
+            return None
+
+        seg, emb = _build_dummy_models()
+        params = QueryParams(
+            sample_rate=16000, pipeline="diarization",
+            segmentation_model="dummy/seg", embedding_model="dummy/emb",
+        )
+        reg = FakeRegistry(seg, emb)
+        reg.specs = {"dummy/emb": SimpleNamespace(match_threshold=0.91)}
+        s1 = DiarizationSession(params=params, registry=reg,
+                                on_message=on_message, loop=loop)
+        assert s1.match_threshold == 0.91
+        # FakeRegistry without specs -> global default.
+        s2 = DiarizationSession(params=params, registry=FakeRegistry(seg, emb),
+                                on_message=on_message, loop=loop)
+        from diart_server.config import settings
+        assert s2.match_threshold == settings.match_threshold
+    finally:
+        _stop_loop(loop, t)

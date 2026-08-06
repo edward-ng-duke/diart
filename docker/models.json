@@ -59,5 +59,13 @@
     "local_path": "nvidia/titanet",
     "kind": "embedding",
     "backend": "nemo"
+  },
+  {
+    "hf_name": "wespeaker/cnceleb-resnet34-LM",
+    "local_path": "wespeaker/cnceleb-resnet34-LM/speaker-embedding.onnx",
+    "filename": "speaker-embedding.onnx",
+    "kind": "embedding",
+    "backend": "wespeaker_onnx",
+    "match_threshold": 0.85
   }
 ]

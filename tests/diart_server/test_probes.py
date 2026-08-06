@@ -101,8 +101,8 @@ def test_v1_info_returns_expected_shape():
     assert body["device"] == settings.device
     assert body["max_concurrent_sessions"] == settings.max_concurrent_sessions
     assert isinstance(body["models"], dict)
-    # Manifest at docker/models.json contains 10 entries.
-    assert len(body["models"]) == 10
+    # Manifest at docker/models.json contains 11 entries.
+    assert len(body["models"]) == 11
     # Spot-check a couple of well-known names.
     assert body["models"]["pyannote/segmentation-3.0"] == "segmentation"
     assert body["models"]["pyannote/embedding"] == "embedding"
@@ -113,7 +113,8 @@ def test_v1_info_voiceprint_ready_lists_cohort_backed_models():
     (docs/bugs/2026-08-05-cohort-missing-threshold.md §4.2): the match
     threshold is calibrated for the mean-centered score, so cohort-less
     models must be advertised as unable to identify. Dev layout ships
-    exactly two cohort files; the field is sorted by construction."""
+    three cohort files (the cnceleb one added with the wespeaker_onnx
+    backend, 2026-08-06); the field is sorted by construction."""
     with TestClient(app) as client:
         response = client.get("/v1/info")
     assert response.status_code == 200
@@ -121,6 +122,7 @@ def test_v1_info_voiceprint_ready_lists_cohort_backed_models():
     assert body["voiceprint_ready"] == [
         "pyannote/embedding",
         "pyannote/wespeaker-voxceleb-resnet34-LM",
+        "wespeaker/cnceleb-resnet34-LM",
     ]
 
 

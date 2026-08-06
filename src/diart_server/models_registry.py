@@ -23,17 +23,25 @@ from diart_server.errors import ModelNotFoundError
 
 
 ModelKind = Literal["segmentation", "embedding"]
-ModelBackend = Literal["pyannote", "onnx", "speechbrain", "nemo"]
+ModelBackend = Literal["pyannote", "onnx", "speechbrain", "nemo", "wespeaker_onnx"]
 
 
 @dataclass
 class ModelSpec:
-    """A single entry in the models manifest."""
+    """A single entry in the models manifest.
+
+    ``match_threshold`` optionally overrides ``settings.match_threshold`` for
+    voiceprint identification with this embedding model: the centered-score
+    scale differs per embedding space, so a single global threshold cannot fit
+    every model (e.g. cnceleb-resnet34 needs ~0.85 where the deployed
+    voxceleb-resnet34 needs 0.82). ``None`` -> use the global setting.
+    """
 
     hf_name: str
     local_path: str
     kind: ModelKind
     backend: ModelBackend
+    match_threshold: float | None = None
 
 
 class ModelsRegistry:
@@ -64,7 +72,7 @@ class ModelsRegistry:
         # ``ModelSpec`` doesn't carry every JSON field (e.g. ``filename``
         # used by the ONNX downloader). Restrict to the dataclass fields
         # so optional manifest extensions don't break construction.
-        keep = {"hf_name", "local_path", "kind", "backend"}
+        keep = {"hf_name", "local_path", "kind", "backend", "match_threshold"}
         return {
             entry["hf_name"]: ModelSpec(**{k: v for k, v in entry.items() if k in keep})
             for entry in data
@@ -158,6 +166,19 @@ class ModelsRegistry:
         start = time.monotonic()
         if spec.backend == "onnx":
             model = EmbeddingModel.from_onnx(local_path)
+        elif spec.backend == "wespeaker_onnx":
+            # wespeaker model-zoo ONNX exports take FBANK features, not raw
+            # waveforms, so diart's own ONNXLoader (waveform input) cannot run
+            # them. pyannote.audio ships a wrapper that computes fbank in
+            # Python and feeds the ORT session; wrap it in a lazy loader so
+            # the EmbeddingModel contract (load-on-first-use) is preserved.
+            from pyannote.audio.pipelines.speaker_verification import (
+                ONNXWeSpeakerPretrainedSpeakerEmbedding,
+            )
+
+            model = EmbeddingModel(
+                lambda: ONNXWeSpeakerPretrainedSpeakerEmbedding(local_path)
+            )
         else:
             model = EmbeddingModel.from_pyannote(local_path, use_hf_token=False)
         metrics.model_load_seconds.labels(model=name).set(
