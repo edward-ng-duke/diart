@@ -62,6 +62,21 @@ def test_live_page_no_similarity_hint():
     assert "score" not in code
 
 
+def test_live_page_keeps_turn_replacement_and_overlap_badge():
+    """T1 is display-only surgery on the identity render
+    (docs/superpowers/plans/2026-08-06-voiceprint-selection-plan.md T1): the
+    turn_id-keyed partial->final in-place replacement (with its stale-partial
+    guard) and the ⑂重叠 badge must survive it untouched."""
+    client = TestClient(create_app())
+    r = client.get("/demo/live")
+    assert r.status_code == 200
+    assert "turnLines" in r.text
+    assert "turnLines.set(tid, div)" in r.text
+    assert "if(m.partial && !div.classList.contains('partial')) return;" in r.text
+    assert "⑂重叠" in r.text
+    assert "m.overlapped" in r.text
+
+
 def test_live_page_dropdown_references_voiceprint_ready():
     """Cohort-missing fix (docs/bugs/2026-08-05-cohort-missing-threshold.md
     §4.3): the embedding dropdown must be filtered on /v1/info's
