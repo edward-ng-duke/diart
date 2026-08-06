@@ -193,6 +193,135 @@ that must run it** (and must first fix its `return 3` SKIPPED-as-FAIL, plan
   check is the behavioural backstop, but it is a scratchpad script, not part
   of the pytest gate (it needs node).
 
-## Review
+## Review: PASS (iteration 1)
 
-pending
+Independent reviewer, 2026-08-06, at `a2b0084`. Nothing from §3 was taken on
+trust — every number below was re-derived on this machine.
+
+### R1. Unit gate (the ONLY acceptance command) — 0 failed
+
+```
+$ python -m pytest tests/diart_server -q \
+    --ignore=tests/diart_server/test_e2e_websocket.py \
+    --ignore=tests/diart_server/test_end_control.py \
+    --ignore=tests/diart_server/test_failure_modes.py -p no:cacheprovider
+168 passed, 1 skipped, 188 warnings in 74.17s (0:01:14)
+```
+
+Baseline is `167 passed, 1 skipped`. Delta `+1` re-derived independently from
+the test inventory rather than from the report: `git show
+47e0ecd:tests/diart_server/test_live_route.py | grep -c '^def test_'` → **4**;
+`grep -c '^def test_' tests/diart_server/test_live_route.py` → **5**. The
+replacement is 1-for-1 (`test_live_page_identity_continuity_hint_static_asserts`
+→ `test_live_page_no_similarity_hint`) and `test_live_page_keeps_turn_
+replacement_and_overlap_badge` is the `+1`. No other test file lost a test.
+
+Named, all five in the touched file:
+
+```
+$ python -m pytest tests/diart_server/test_live_route.py -v -p no:cacheprovider
+test_live_page_served                                       PASSED
+test_live_page_enrollment_channel_static_asserts            PASSED
+test_live_page_no_similarity_hint                           PASSED
+test_live_page_keeps_turn_replacement_and_overlap_badge     PASSED
+test_live_page_dropdown_references_voiceprint_ready         PASSED
+5 passed, 5 warnings in 0.27s
+```
+
+### R2. V3 hard red line — re-verified with a reviewer-owned render harness
+
+§3.2's script was **not** reused. `scratchpad/reviewer_render_check.js` runs the
+*entire* `<script>` block of the served `live.html` inside a DOM shim (so the
+real `lineHTML`/`addLine`/`neutralLabel` execute, not a hand-extracted slice)
+and drives it with **11** `TranscriptMessage` shapes `session.py:_transcribe_
+and_emit` can produce — including a high-`cand_score` candidate-only run
+(`cand_score=0.999`), a partial carrying `score=0.81` with `name=None`, an
+empty-string `name`, and a zero-length turn with no `turn_id`. A line counts as
+a leak if it contains any registered name or any digit outside the timestamp
+span and the `说话人 N` counter:
+
+```
+name/score leaks on unconfirmed lines: 0/10
+confirmed rows rendering name+score:   1/1
+```
+
+The V3 case (`name=null, score=0.79, cand_name='吴泽', cand_score=0.79`) renders
+`<span class="unk">说话人 1</span>: 你好` — no name, no number.
+
+### R3. Confirmed-line render and the T1 blast radius — not damaged
+
+From the same harness, on the real DOM:
+
+```
+confirmed        <span class="t">1.0–2.4s</span> <span class="name">吴泽</span> (0.87): 你好
+IN-PLACE REPLACEMENT: OK   (partial 'line partial' -> final 'line', n stays 1)
+STALE-PARTIAL GUARD:  OK   (post-final stale partial does not clobber)
+new turn_id appends:  n=2
+OVERLAP BADGE:        OK   (⑂重叠 present)
+```
+
+`turn_id` is `uuid.uuid4().hex` (`turn_aggregator.py:43`), so the never-cleared
+`turnLines` map cannot collide across a stop/start cycle — unchanged from base
+either way.
+
+### R4. `neutralLabel` boundary behaviour — fail-safe
+
+```
+"speaker0"->"说话人 1"  "speaker9"->"说话人 10"  "speaker10"->"说话人 11"
+""->"说话人"  null->"说话人"  undefined->"说话人"  "speaker"->"说话人"  "吴泽"->"说话人"
+```
+
+The no-digit path returns a bare neutral string instead of echoing the label,
+so even a hypothetical name-shaped label cannot reach the screen.
+
+### R5. The new test is non-vacuous and catches real regressions
+
+The sliced-branch assertions were checked for vacuity — the comment-stripped
+slice is exactly `who = \`<span class="unk">${neutralLabel(m.speaker)}</span>\`;`
+(non-empty), and `assert "neutralLabel(m.speaker)" in code` is the anti-vacuity
+anchor: an empty slice fails the test rather than passing it.
+
+Mutation test (applied to the served page text in memory; **no repo file was
+modified**), running the exact assertion body of `test_live_page_no_similarity
+_hint`:
+
+```
+PASS  M0 unmutated (control)
+FAIL  M1 reinstate cand_name/cand_score hint    <- "≈"/"cand_name"/"cand_score"/"name" in code/"score" in code
+FAIL  M2 reinstate score-only render            <- "score" in code
+FAIL  M3 reinstate lastVerified cross-turn guess<- "lastVerified"/"name" in code
+FAIL  M4 differently-named leak, no ≈ character <- "cand_name"/"name" in code
+```
+
+M4 matters: §5's caveat ("cannot prove a future edit reintroduces a leak
+through a differently-named variable") **understates** the test — the structural
+`"name" not in code` / `"score" not in code` assertions on the sliced `else`
+branch catch a renamed leak that the page-wide `≈` check would miss.
+
+### R6. Scope, invariants, and the cross-matrix gate
+
+`git diff --name-only 47e0ecd..HEAD` → exactly three files (this report,
+`live.html`, `test_live_route.py`). Re-verified by sha256 that
+`session.py`, `voiceprint_matcher.py`, `protocol.py`, `config.py`,
+`embedding_extractor.py`, `app.py`, `turn_aggregator.py` are **byte-identical**
+to `47e0ecd`. The scoring/identity chain is untouched, so
+`verify_speaker_cross_matrix.py` cannot change value and the brief's condition
+for running it is not met — §3.3's reasoning is correct. Invariants 1–7 hold:
+no wire change (6), no server state (1/2/3/4/5/7), and the only client-side
+cross-turn identity cache (`lastVerified`) is gone. No unauthorised extras: no
+new env var, no new constant, no server edit, no production-hardening work.
+
+### Non-blocking observations (do NOT fix under T1)
+
+1. `protocol.py:145-146`, `config.py:69-70`, `session.py:667` still describe the
+   demo as rendering a dimmed `≈name score?`. Stale prose only; T3 deletes
+   `cand_*` outright, which is the right place to clean it up.
+2. `docs/bugs/2026-08-05-identity-continuity-overlap-purity.md` §4.3 still
+   specifies the removed hint. The overturn is recorded in the replacing test's
+   docstring and §2 of this report, which satisfies the gate's requirement.
+3. `index.html` (batch demo) renders diart labels only and never receives an
+   identity, so it carries no equivalent leak.
+
+**Verdict: PASS.** T1 is implemented as the plan §4 row specifies, V3 is
+structurally closed on the display side, and nothing it was required to leave
+alone moved.
