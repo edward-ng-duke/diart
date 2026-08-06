@@ -27,22 +27,39 @@ def test_live_page_enrollment_channel_static_asserts():
     assert "n_clips" in r.text  # multi-clip feedback surfaced in the UI
 
 
-def test_live_page_identity_continuity_hint_static_asserts():
-    """Identity-continuity hint (docs/bugs/2026-08-05-identity-continuity-
-    overlap-purity.md §4.3): the page must consume the prediction-stream
-    identity echo and render nameless lines with an explicitly-uncertain
-    ≈name? hint (display-only; the server stamps nothing it did not verify)."""
+def test_live_page_no_similarity_hint():
+    """Unconfirmed lines render a NEUTRAL label — no name, no score, no ≈guess
+    (docs/superpowers/plans/2026-08-06-voiceprint-selection-plan.md T1).
+
+    REPLACES ``test_live_page_identity_continuity_hint_static_asserts``, which
+    pinned exactly the behaviour this task removes; its four overturned
+    assertions were ``"≈" in r.text``, ``"lastVerified" in r.text``,
+    ``"m.cand_name" in r.text`` and ``"m.cand_score.toFixed(2)" in r.text``
+    (plus the ``.hint{`` style rule that existed only to render them).
+    Basis: measured, the ≈name? hint appeared on 100% of unregistered-speaker
+    turns and was 0% correct (plan §3 ⑤), which makes it the single structural
+    failure source for acceptance criterion V3 — "an unregistered speaker
+    talking for 2 minutes must never see a registered name on screen"
+    (plan §2). The server is unchanged: cand_name/cand_score are still sent,
+    the page just refuses to render them."""
     client = TestClient(create_app())
     r = client.get("/demo/live")
     assert r.status_code == 200
-    assert "type==='prediction'" in r.text
-    assert ".hint{" in r.text
-    assert "≈" in r.text
-    assert "lastVerified" in r.text
-    # Per-line measured candidate (cand_name/cand_score) takes precedence over
-    # the lastVerified fallback and renders with its real score.
-    assert "m.cand_name" in r.text
-    assert "m.cand_score.toFixed(2)" in r.text
+    assert "≈" not in r.text
+    assert "lastVerified" not in r.text
+    assert "cand_name" not in r.text
+    assert "cand_score" not in r.text
+    assert "说话人" in r.text  # the neutral label
+    # The unconfirmed branch of lineHTML must leak neither a name nor a score:
+    # the server still ships `score` with `name=None` (session.py:721).
+    line_html = r.text.split("function lineHTML(m){", 1)[1]
+    unconfirmed = line_html.split("} else {", 1)[1].split("\n  }", 1)[0]
+    code = "\n".join(
+        ln for ln in unconfirmed.splitlines() if not ln.strip().startswith("//")
+    )
+    assert "neutralLabel(m.speaker)" in code
+    assert "name" not in code
+    assert "score" not in code
 
 
 def test_live_page_dropdown_references_voiceprint_ready():
