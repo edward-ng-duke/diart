@@ -231,6 +231,16 @@ class DiarizationSession:
         # the pipeline's device so its internal .to() never moves the shared
         # registry model off the pipeline's device.
         self._identity_embedder = None
+        # 2026-08-20: per diart label, how many consecutive identification runs
+        # were too short to rewrite ``_last_match`` AND failed to re-confirm the
+        # name cached there. diart hands two people the same label whenever a
+        # silence longer than its 5s window separates them, and a new occupant
+        # who only speaks in sub-``min_identify_seconds`` bursts never rewrites
+        # the cache -- so the previous occupant's name would echo on the
+        # prediction stream forever. At
+        # ``settings.identity_echo_max_misses`` the echo is dropped.
+        # docs/bugs/2026-08-20-diart-label-merge-identity-leak.md
+        self._echo_misses: dict[str, int] = defaultdict(int)
         self._asr_sem: Optional[asyncio.Semaphore] = None
         self._asr_futures: set = set()
         # BUG2: multi-speaker (overlap) intervals in diart's timeline, merged
@@ -668,6 +678,16 @@ class DiarizationSession:
         never a confirmed ``name``, never written to ``_last_match``.
         Partials go through the same path, so a growing open
         turn's identity firms up and the final (same turn_id) replaces it.
+
+        Runs too short to rewrite ``_last_match`` still AGE it via
+        :meth:`_age_identity_echo` (2026-08-20). diart hands two people the
+        same label whenever a silence longer than its 5s window separates them,
+        and a new occupant who only speaks in short bursts never rewrites the
+        cache -- so the previous occupant's name would echo on the prediction
+        stream forever. ``identity_echo_max_misses`` consecutive short turns
+        that fail to re-confirm the cached name drop it and set
+        ``contested=True`` on that transcript. This never changes the turn's own
+        ``name``, which already comes from this turn's audio versus the roster.
         Sessions without a cohort mean skip identification entirely
         (``name=None``): the match threshold is calibrated for the centered
         score only (docs/bugs/2026-08-05-cohort-missing-threshold.md).
@@ -683,6 +703,7 @@ class DiarizationSession:
             )
             name, score = None, None
             cand_name, cand_score = None, None
+            contested = False
             pure_seconds = (
                 identity_pcm.size / self.ring.sample_rate
                 if identity_pcm is not None else 0.0
@@ -723,8 +744,25 @@ class DiarizationSession:
                         # stream (both partial and final go through here).
                         # Candidate-only runs (pure < min_identify_seconds)
                         # never touch it: their embeddings are below the
-                        # calibrated reliability floor.
+                        # calibrated reliability floor. They DO age it, below.
                         self._last_match[ft.speaker] = (name, score)
+                        self._echo_misses.pop(ft.speaker, None)
+                    else:
+                        # 2026-08-20: too short to be authoritative, but not
+                        # evidence-free. Enough consecutive short turns that
+                        # fail to re-confirm the cached name mean the label
+                        # changed occupant; drop the echo so the prediction
+                        # stream stops emitting the previous one's name.
+                        confirmed = (
+                            cand_name
+                            if cand_name is not None
+                            and cand_score is not None
+                            and cand_score >= self.match_threshold
+                            else None
+                        )
+                        contested = self._age_identity_echo(
+                            ft.speaker, confirmed
+                        )
             try:
                 lang, text = await self.asr_client.transcribe(pcm)
             except Exception:  # noqa: BLE001
@@ -743,6 +781,7 @@ class DiarizationSession:
                 overlap_ratio=overlap_ratio,
                 cand_name=cand_name,
                 cand_score=cand_score,
+                contested=contested,
             ).model_dump()
             await self.on_message(msg)
             return True
@@ -777,6 +816,41 @@ class DiarizationSession:
             0.0,
             mean_embedding=self.cohort_mean,
         )
+
+    def _age_identity_echo(self, label: str, confirmed: Optional[str]) -> bool:
+        """Bound how long a stale ``_last_match`` echo can survive on a label.
+
+        Called for identification runs that are too SHORT to rewrite
+        ``_last_match`` (below ``settings.min_identify_seconds``); full-length
+        runs rewrite it unconditionally and reset the counter, so they need no
+        ageing. Returns True on the run that drops the echo.
+
+        A short turn that re-confirms the cached name resets the counter. One
+        that does not is one unit of evidence -- not proof: short utterance
+        embeddings miss constantly (that is the whole reason
+        ``min_identify_seconds`` exists), so a single miss must not drop a
+        genuine speaker's hint. Only ``identity_echo_max_misses`` in a row do.
+
+        Deliberately NOT a similarity test against the previous turn: measured
+        on cross-segment pairs of the SAME speaker, genuine and impostor
+        turn-to-turn scores overlap at every turn length (genuine min
+        0.569-0.587 vs impostor max 0.813-0.839), so any threshold with usable
+        detection costs 21-34% false drops -- it would shred a real speaker's
+        name continuity. See scripts/verify_label_continuity.py.
+        """
+        cached = self._last_match.get(label, (None, None))[0]
+        if cached is None:
+            self._echo_misses.pop(label, None)
+            return False
+        if confirmed == cached:
+            self._echo_misses[label] = 0
+            return False
+        self._echo_misses[label] += 1
+        if self._echo_misses[label] >= settings.identity_echo_max_misses:
+            self._last_match.pop(label, None)
+            self._echo_misses.pop(label, None)
+            return True
+        return False
 
     def _extract_embedding(self, speaker_label: str) -> Optional[np.ndarray]:
         """Return the L2-normalized running centroid for the given speaker.

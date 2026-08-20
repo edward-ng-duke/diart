@@ -147,6 +147,16 @@ class TranscriptMessage(BaseModel):
     # (majority overlap, no cohort, no store, or pure speech below the floor).
     cand_name: str | None = None
     cand_score: float | None = None
+    # 2026-08-20: True on the turn where the server DROPPED this diart label's
+    # stale identity echo, after settings.identity_echo_max_misses consecutive
+    # short turns failed to re-confirm the cached name. diart hands two people
+    # the same label whenever a silence longer than its 5s window separates
+    # them; this bounds how long the first occupant's name can keep appearing
+    # on the prediction stream over the second one's audio. It is a staleness
+    # signal, NOT a claim about who is speaking: clients must drop any name
+    # they cached for this label, and must not infer a new one.
+    # docs/bugs/2026-08-20-diart-label-merge-identity-leak.md
+    contested: bool = False
 
 
 class VoiceprintInfo(BaseModel):
@@ -181,6 +191,33 @@ class QueryParams(BaseModel):
     pipeline: Literal["diarization", "vad"] = "diarization"
     segmentation_model: str = Field(default="pyannote/segmentation-3.0")
     embedding_model: str = Field(default="pyannote/embedding")
+    # --- diart clustering knobs (measured 2026-08-20; read before tuning) ---
+    # These three are diart's README hyper-parameters for AMI, which were
+    # measured with pyannote.audio<3.1 and pyannote/segmentation v1 (SOFT
+    # per-speaker probabilities). We run pyannote/segmentation-3.0, a POWERSET
+    # model that diart adapts via PowersetAdapter -> Powerset.to_multilabel()
+    # with soft=False, so the segmentation this pipeline sees is strictly
+    # BINARY (measured: the only two values ever emitted are 0.0 and 1.0).
+    # Consequences, all measured at HEAD 1fb7baa and pinned by
+    # tests/diart_server/test_diart_param_invariants.py:
+    #
+    # * tau_active is INERT. `max(seg) >= 0.507` <=> `max == 1`, so a single
+    #   17 ms frame marks a speaker active; and with latency == step == 0.5,
+    #   DelayedAggregation.num_overlapping_windows == 1, so Binarize also sees
+    #   raw 0/1 and is a no-op for ANY threshold in (0, 1).
+    # * rho_update=0.006 means 0.6% of a 5s window = 30 ms of speech is enough
+    #   to spawn or update a centroid. Sweeping it over 0.006/0.05/0.10
+    #   produced BIT-IDENTICAL diarizations on every probe scenario.
+    # * delta_new=1.057 is SATURATED: the cross-speaker cosine distance never
+    #   reaches it (measured max 1.047 in the wespeaker space, 1.065 in
+    #   pyannote/embedding), so "this matches nobody -> new speaker" never
+    #   fires and new labels appear only via the one-to-one assignment
+    #   constraint. Its known cost is merging two speakers separated by a
+    #   silence longer than `duration`; that is handled at the TURN level
+    #   (settings.identity_echo_max_misses), NOT here. Lowering it was
+    #   measured and is WORSE: 0.80 -> 4 labels and 0.75 -> 5 labels on
+    #   data/2news.mp3, which really has 2. Re-run
+    #   scripts/eval/diart_cluster_sweep.py before changing any of these.
     tau_active: float = Field(default=0.507, ge=0.0, le=1.0)
     rho_update: float = Field(default=0.006, ge=0.0, le=1.0)
     delta_new: float = Field(default=1.057, ge=0.0, le=2.0)

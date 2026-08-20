@@ -75,6 +75,30 @@ class Settings(BaseSettings):
     min_candidate_seconds: float = Field(
         default=0.6, validation_alias="DIART_MIN_CANDIDATE_SECONDS"
     )
+    # Staleness bound for the per-label identity echo (2026-08-20).
+    # ``_last_match[label]`` is a display hint: the last TURN-VERIFIED identity
+    # for a diart label. It is rewritten by every turn with at least
+    # ``min_identify_seconds`` of pure speech, so it self-corrects -- EXCEPT
+    # when the label's new occupant only ever speaks in shorter bursts, which
+    # never write it. Then the previous occupant's name echoes on the
+    # prediction stream forever, and diart really does hand two people the same
+    # label whenever a silence longer than its 5s window separates them
+    # (docs/bugs/2026-08-20-diart-label-merge-identity-leak.md).
+    #
+    # Deliberately a COUNT of non-confirming turns, not a similarity threshold.
+    # Turn-to-turn embedding comparison was measured on CROSS-SEGMENT pairs of
+    # the same speaker (the live case, not adjacent slices of one utterance)
+    # and the genuine/impostor distributions OVERLAP at every turn length:
+    # genuine min 0.569-0.587 vs impostor max 0.813-0.839, so any threshold
+    # with usable detection costs 21-34% false contests
+    # (scripts/verify_label_continuity.py prints the table). A count reuses the
+    # already-calibrated confirm/reject decision instead of inventing a second,
+    # uncalibratable one: after this many consecutive short turns that fail to
+    # re-confirm the cached name, the echo is dropped. It bounds the leak; it
+    # does not pretend to identify the new speaker.
+    identity_echo_max_misses: int = Field(
+        default=3, ge=1, validation_alias="DIART_IDENTITY_ECHO_MAX_MISSES"
+    )
     silence_gap: float = Field(default=0.7, validation_alias="DIART_SILENCE_GAP")
     # Lowered 20.0 -> 12.0 as defense-in-depth for BUG1 (long-monologue latency):
     # even with partial ASR disabled, worst-case final transcript latency drops

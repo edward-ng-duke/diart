@@ -75,6 +75,21 @@ async def lifespan(app: FastAPI):
         settings.device,
         settings.models_dir,
     )
+    # 2026-08-20: on CPU the shipped pipeline (5s window re-run every 0.5s)
+    # was measured at RTF ~0.25 per session on a modern desktop core set, so
+    # roughly 4 concurrent sessions saturate it. Past that, MeetingAudioSource
+    # drops frames on queue overflow -- audio that reaches NEITHER diart NOR
+    # the ring, i.e. silently degraded transcripts and identity. Warn rather
+    # than clamp: the real ceiling is host-specific, and queue_overflow_total
+    # plus the per-session overflow warning tell you when it is hit.
+    if torch.device(settings.device).type == "cpu" and settings.max_concurrent_sessions > 4:
+        logger.warning(
+            "device=cpu with max_concurrent_sessions=%d: inference is ~0.25 "
+            "real-time per session, so concurrent sessions past ~4 will drop "
+            "audio frames (watch queue_overflow_total). Use DIART_DEVICE=cuda "
+            "or lower DIART_MAX_CONCURRENT_SESSIONS.",
+            settings.max_concurrent_sessions,
+        )
     registry = ModelsRegistry(settings.models_dir, MANIFEST_PATH)
     app.state.registry = registry
     try:
